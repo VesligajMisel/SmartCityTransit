@@ -4,6 +4,10 @@ public class GeoUtils {
 
     private static final int TILE_SIZE = 256;
 
+    public static int getTileSize() {
+        return TILE_SIZE;
+    }
+
     public static int wrapTileX(int x, int zoom) {
         int n = 1 << zoom;
         int r = x % n;
@@ -55,5 +59,38 @@ public class GeoUtils {
 
     public static double latToWorldY(double lat, int zoom) {
         return latToWorldPixelY(lat, zoom);
+    }
+
+    // ---------------------------
+    // ADDITIONS (for picking, UI, cleaner tile math)
+    // ---------------------------
+
+    /** world pixels (Y-up) -> longitude */
+    public static double worldXToLon(double worldX, int zoom) {
+        double n = (double) (1 << zoom) * TILE_SIZE;
+        return (worldX / n) * 360.0 - 180.0;
+    }
+
+    /** world pixels (Y-up) -> latitude */
+    public static double worldYToLat(double worldY, int zoom) {
+        double n = (double) (1 << zoom) * TILE_SIZE;
+
+        // back to OSM's top-left Y
+        double yTopLeft = n - worldY;
+
+        // inverse Web Mercator
+        double mercN = Math.PI * (1.0 - 2.0 * yTopLeft / n);
+        double latRad = Math.atan(Math.sinh(mercN));
+        return Math.toDegrees(latRad);
+    }
+
+    /** world pixel X -> tileX at zoom (NOT wrapped) */
+    public static int worldPixelToTileX(double worldX) {
+        return (int) Math.floor(worldX / TILE_SIZE);
+    }
+
+    /** world pixel Y (Y-up) -> world tileY (bottom-origin) */
+    public static int worldPixelToWorldTileY(double worldY) {
+        return (int) Math.floor(worldY / TILE_SIZE);
     }
 }

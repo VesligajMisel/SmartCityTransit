@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.net.HttpRequestBuilder;
 import com.badlogic.gdx.net.HttpStatus;
 import com.badlogic.gdx.utils.ObjectMap;
+import com.badlogic.gdx.utils.Array;
 
 public class TileManager {
 
@@ -14,6 +15,9 @@ public class TileManager {
 
     private static final String TILE_URL =
         "https://basemaps.cartocdn.com/light_all/%d/%d/%d.png";
+
+    // Soft limit to prevent runaway RAM usage when panning/zooming a lot
+    private static final int MAX_TILES = 800;
 
     private static int maxIndex(int zoom) {
         return (1 << zoom) - 1;
@@ -34,6 +38,10 @@ public class TileManager {
 
     private final ObjectMap<String, Texture> cache = new ObjectMap<>();
     private final ObjectMap<String, Boolean> loading = new ObjectMap<>();
+
+    // simple access order for soft LRU eviction
+    private final Array<String> accessOrder = new Array<>(false, 1024);
+
     private final Texture placeholder;
 
     public TileManager() {
@@ -49,8 +57,12 @@ public class TileManager {
         int yy = clampY(y, zoom);
 
         String key = zoom + "_" + xx + "_" + yy;
+
         Texture ready = cache.get(key);
-        if (ready != null) return ready;
+        if (ready != null) {
+            touch(key);
+            return ready;
+        }
 
         if (!loading.containsKey(key)) {
             loading.put(key, true);
@@ -71,6 +83,7 @@ public class TileManager {
                     int status = httpResponse.getStatus().getStatusCode();
                     if (status != HttpStatus.SC_OK) {
                         Gdx.app.log("TILES", "HTTP " + status + " url=" + url);
+                        Gdx.app.postRunnable(() -> loading.remove(key));
                         return;
                     }
 
@@ -80,20 +93,28 @@ public class TileManager {
                             Pixmap pixmap = new Pixmap(bytes, 0, bytes.length);
                             Texture tex = new Texture(pixmap);
                             pixmap.dispose();
+
                             cache.put(key, tex);
+                            touch(key);
+                            evictIfNeeded();
+
                         } catch (Exception e) {
                             Gdx.app.log("TILES", "Decode failed url=" + url + " err=" + e.getMessage());
+                        } finally {
+                            loading.remove(key);
                         }
                     });
                 }
 
                 @Override
                 public void failed(Throwable t) {
+                    Gdx.app.postRunnable(() -> loading.remove(key));
                     Gdx.app.log("TILES", "FAILED url=" + url + " err=" + t.getMessage());
                 }
 
                 @Override
                 public void cancelled() {
+                    Gdx.app.postRunnable(() -> loading.remove(key));
                     Gdx.app.log("TILES", "CANCELLED url=" + url);
                 }
             });
@@ -103,12 +124,40 @@ public class TileManager {
     }
 
     public int getTileSize() {
+        // keep stable API; can later return GeoUtils.getTileSize() if you want one source of truth
         return TILE_SIZE;
+    }
+
+    public Texture getPlaceholder() {
+        return placeholder;
+    }
+
+    private void touch(String key) {
+        // move key to the end (most-recent)
+        for (int i = accessOrder.size - 1; i >= 0; i--) {
+            if (accessOrder.get(i).equals(key)) {
+                accessOrder.removeIndex(i);
+                break;
+            }
+        }
+        accessOrder.add(key);
+    }
+
+    private void evictIfNeeded() {
+        // Evict oldest until under limit
+        while (cache.size > MAX_TILES && accessOrder.size > 0) {
+            String oldest = accessOrder.removeIndex(0);
+            Texture t = cache.remove(oldest);
+            if (t != null) {
+                t.dispose();
+            }
+        }
     }
 
     public void dispose() {
         for (Texture t : cache.values()) t.dispose();
         cache.clear();
+        accessOrder.clear();
         placeholder.dispose();
         loading.clear();
     }

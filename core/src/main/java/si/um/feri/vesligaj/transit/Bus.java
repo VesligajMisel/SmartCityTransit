@@ -2,73 +2,86 @@ package si.um.feri.vesligaj.transit;
 
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.math.Vector2;
-import java.util.List;
 
 public class Bus {
 
     private final BusRoute route;
-    private final float speedPx;
 
-    private float[] segLen;
-    private float totalLen;
-    private float s;
+    // hitrost v world px/s (world pixels per second)
+    private float speedPx;
 
+    // razdalja po poti (world px)
+    private float distance;
+
+    private boolean loop = true;
+
+    // cache da ne alociramo vsaki frame
     private final Vector2 position = new Vector2();
 
-    public Bus(BusRoute route, float speedPx) {
+    /**
+     * @param route BusRoute (mora imeti rebuildWorld(zoom) že izveden)
+     * @param speedPx hitrost v world px/s
+     * @param startDistance začetni zamik po poti (world px) -> za več avtobusov na isti liniji
+     */
+    public Bus(BusRoute route, float speedPx, float startDistance) {
         this.route = route;
-        this.speedPx = speedPx;
-        buildRoute();
+        this.speedPx = Math.max(1f, speedPx);
+        this.distance = Math.max(0f, startDistance);
     }
 
-    private void buildRoute() {
-        List<Vector2> pts = route.points;
-        if (pts.size() < 2) return;
-
-        segLen = new float[pts.size() - 1];
-        totalLen = 0f;
-
-        for (int i = 0; i < pts.size() - 1; i++) {
-            float d = pts.get(i).dst(pts.get(i + 1));
-            segLen[i] = d;
-            totalLen += d;
-        }
-
-        s = 0f;
-        position.set(pts.get(0));
+    public BusRoute getRoute() {
+        return route;
     }
 
-    public void update(float dt) {
-        if (totalLen <= 0f) return;
+    public void setSpeedPx(float speedPx) {
+        this.speedPx = Math.max(1f, speedPx);
+    }
 
-        s += speedPx * dt;
-        if (s >= totalLen) s = totalLen;
+    public float getSpeedPx() {
+        return speedPx;
+    }
+
+    public void setLoop(boolean loop) {
+        this.loop = loop;
+    }
+
+    public boolean isLoop() {
+        return loop;
     }
 
     public float getDistanceOnRoute() {
-        return s;
+        return distance;
+    }
+
+    public void update(float dt) {
+        float total = route.getTotalLength();
+        if (total <= 0f) return;
+
+        distance += speedPx * dt;
+
+        if (loop) {
+            distance = distance % total;
+            if (distance < 0f) distance += total;
+        } else {
+            if (distance > total) distance = total;
+        }
     }
 
     public Vector2 getPosition() {
-        float dist = s;
-
-        for (int i = 0; i < segLen.length; i++) {
-            if (dist > segLen[i]) {
-                dist -= segLen[i];
-                continue;
-            }
-
-            Vector2 a = route.points.get(i);
-            Vector2 b = route.points.get(i + 1);
-            float t = segLen[i] == 0 ? 0 : dist / segLen[i];
-            position.set(a).lerp(b, t);
-            break;
-        }
-        return position;
+        return route.getPositionAtDistance(distance, position);
     }
 
+    /**
+     * “Lepši” render: halo + body.
+     * Barvo naj nastavi caller (po liniji), tu samo izrišemo oblike.
+     */
     public void render(ShapeRenderer sr) {
         Vector2 p = getPosition();
-        sr.circle(p.x, p.y, 6f);
+
+        // halo
+        sr.circle(p.x, p.y, 8.5f, 20);
+
+        // body (caller naj pred tem nastavi drugo barvo)
+        sr.circle(p.x, p.y, 6.0f, 20);
     }
 }

@@ -63,6 +63,11 @@ public class SmartCityTransit extends ApplicationAdapter {
     private Stop selectedStop = null;
     private Bus selectedBus = null;
 
+    private BusRoute selectedRoute = null;
+    private static final float ROUTE_PICK_TOLERANCE = 14f;
+    private Vector2 cameraTarget = null;
+
+
     @Override
     public void create() {
         batch = new SpriteBatch();
@@ -157,6 +162,15 @@ public class SmartCityTransit extends ApplicationAdapter {
                     if (selectedStop != null) {
                         selectedBus = null;
                     }
+
+                    // 3) then pick route
+                    BusRoute r = pickRoute(v.x, v.y);
+                    if (r != null) {
+                        selectedRoute = r;
+                        selectedBus = null;
+                        selectedStop = null;
+                    }
+                    cameraTarget = computeRouteCenter(r);
                 }
 
                 return true;
@@ -189,6 +203,11 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     @Override
     public void render() {
+        if (cameraTarget != null) {
+            float lerp = 0.05f;
+            camera.position.x += (cameraTarget.x - camera.position.x) * lerp;
+            camera.position.y += (cameraTarget.y - camera.position.y) * lerp;
+        }
         camera.update();
 
         float dt = Gdx.graphics.getDeltaTime();
@@ -244,36 +263,87 @@ public class SmartCityTransit extends ApplicationAdapter {
         drawHud();
     }
 
+    private Vector2 computeRouteCenter(BusRoute route) {
+        Array<Vector2> pts = route.getWorldPoints();
+        Vector2 c = new Vector2();
+        if (pts == null || pts.size == 0) return c;
+
+        for (int i = 0; i < pts.size; i++) {
+            c.add(pts.get(i));
+        }
+        c.scl(1f / pts.size);
+        return c;
+    }
+
+
     private void drawRoutes() {
         shapeRenderer.setProjectionMatrix(camera.combined);
 
-        // shadow
-        Gdx.gl.glLineWidth(4f);
-        shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
-        shapeRenderer.setColor(0f, 0f, 0f, 0.35f);
+        float base = 3.0f * camera.zoom;        // normal route thickness
+        float shadow = 7.0f * camera.zoom;      // shadow thickness
+        float fadedMult = 0.65f;
+
+        // -------- SHADOW (filled thick line) --------
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
 
         for (int r = 0; r < routes.size; r++) {
-            Array<Vector2> pts = routes.get(r).getWorldPoints();
+            BusRoute route = routes.get(r);
+
+            boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
+            float shadowAlpha = isSelected ? 0.40f : 0.08f;
+
+            shapeRenderer.setColor(0f, 0f, 0f, shadowAlpha);
+
+            Array<Vector2> pts = route.getWorldPoints();
+            float thick = shadow * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
-                shapeRenderer.line(pts.get(i), pts.get(i + 1));
+                shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // main colored
-        Gdx.gl.glLineWidth(2f);
-        shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
+        // -------- MAIN COLORED (filled thick line) --------
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
 
         for (int r = 0; r < routes.size; r++) {
-            setRouteColor(shapeRenderer, r, 0.95f);
-            Array<Vector2> pts = routes.get(r).getWorldPoints();
+            BusRoute route = routes.get(r);
+
+            boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
+            float alpha = isSelected ? 0.95f : 0.12f;
+
+            setRouteColor(shapeRenderer, r, alpha);
+
+            Array<Vector2> pts = route.getWorldPoints();
+            float thick = base * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
-                shapeRenderer.line(pts.get(i), pts.get(i + 1));
+                shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
-
         shapeRenderer.end();
-        Gdx.gl.glLineWidth(1f);
+
+        // -------- EXTRA HIGHLIGHT for selectedRoute (super obvious) --------
+        if (selectedRoute != null) {
+            int selIndex = routes.indexOf(selectedRoute, true);
+            Array<Vector2> pts = selectedRoute.getWorldPoints();
+
+            // white outline band
+            shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+            shapeRenderer.setColor(1f, 1f, 1f, 0.35f);
+            float outlineThick = 11.0f * camera.zoom;
+            for (int i = 0; i < pts.size - 1; i++) {
+                shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), outlineThick);
+            }
+
+            // colored band on top
+            setRouteColor(shapeRenderer, selIndex, 1.0f);
+            float selectedThick = 5.0f * camera.zoom;
+            for (int i = 0; i < pts.size - 1; i++) {
+                shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), selectedThick);
+            }
+            shapeRenderer.end();
+        }
     }
 
     private void drawStopsAndBuses() {
@@ -304,17 +374,23 @@ public class SmartCityTransit extends ApplicationAdapter {
             Bus b = buses.get(i);
             Vector2 p = b.getPosition();
 
+            boolean routeSelected = (selectedRoute != null);
+            boolean isOnSelectedRoute = (!routeSelected) || (b.getRoute() == selectedRoute);
+
+            float busAlpha = isOnSelectedRoute ? 0.95f : 0.20f;
+            float haloAlpha = isOnSelectedRoute ? 0.30f : 0.08f;
+
             // halo
-            shapeRenderer.setColor(0f, 0f, 0f, 0.30f);
+            shapeRenderer.setColor(0f, 0f, 0f, haloAlpha);
             shapeRenderer.circle(p.x, p.y, 9.0f * camera.zoom, 20);
 
             // body
             int routeIndex = routes.indexOf(b.getRoute(), true);
-            setRouteColor(shapeRenderer, routeIndex, 0.95f);
+            setRouteColor(shapeRenderer, routeIndex, busAlpha);
             shapeRenderer.circle(p.x, p.y, 6.5f * camera.zoom, 20);
 
             // small white dot
-            shapeRenderer.setColor(1f, 1f, 1f, 0.85f);
+            shapeRenderer.setColor(1f, 1f, 1f, busAlpha);
             shapeRenderer.circle(p.x, p.y, 2.0f * camera.zoom, 12);
         }
 
@@ -372,7 +448,7 @@ public class SmartCityTransit extends ApplicationAdapter {
         // HUD background box
         float pad = 10f;
         float boxW = 360f;
-        float boxH = 120f;
+        float boxH = 150f;
 
         shapeRenderer.rect(
             pad,
@@ -392,8 +468,22 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         // Title
         font.setColor(1f, 1f, 1f, 0.92f);
-        font.draw(batch, "SmartCityTransit", x, y);
-        y -= 18f;
+        font.draw(batch, "Lines:", x, y);
+        y -= 16f;
+
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+
+            boolean sel = (r == selectedRoute);
+            String marker = sel ? "> " : "  ";
+
+            font.draw(batch,
+                marker + r.id + " - " + r.name + (sel ? "  [SELECTED]" : ""),
+                x, y
+            );
+            y -= 16f;
+        }
+        y -= 6f;
 
         // Selected bus info
         if (selectedBus != null) {
@@ -504,6 +594,60 @@ public class SmartCityTransit extends ApplicationAdapter {
                 break;
         }
     }
+
+    private BusRoute pickRoute(float worldX, float worldY) {
+        BusRoute best = null;
+        float bestDist2 = Float.MAX_VALUE;
+
+        float tol = ROUTE_PICK_TOLERANCE * camera.zoom;
+        float tol2 = tol * tol;
+
+        for (int r = 0; r < routes.size; r++) {
+            BusRoute route = routes.get(r);
+            Array<Vector2> pts = route.getWorldPoints();
+            if (pts == null || pts.size < 2) continue;
+
+            for (int i = 0; i < pts.size - 1; i++) {
+                Vector2 a = pts.get(i);
+                Vector2 b = pts.get(i + 1);
+                float d2 = pointToSegmentDist2(worldX, worldY, a.x, a.y, b.x, b.y);
+                if (d2 < bestDist2) {
+                    bestDist2 = d2;
+                    best = route;
+                }
+            }
+        }
+
+        return (bestDist2 <= tol2) ? best : null;
+    }
+
+    private float pointToSegmentDist2(float px, float py,
+                                      float ax, float ay,
+                                      float bx, float by) {
+        float abx = bx - ax;
+        float aby = by - ay;
+        float apx = px - ax;
+        float apy = py - ay;
+
+        float abLen2 = abx * abx + aby * aby;
+        if (abLen2 <= 0.000001f) {
+            float dx = px - ax;
+            float dy = py - ay;
+            return dx * dx + dy * dy;
+        }
+
+        float t = (apx * abx + apy * aby) / abLen2;
+        if (t < 0f) t = 0f;
+        if (t > 1f) t = 1f;
+
+        float cx = ax + abx * t;
+        float cy = ay + aby * t;
+
+        float dx = px - cx;
+        float dy = py - cy;
+        return dx * dx + dy * dy;
+    }
+
 
     private String format1(float v) {
         return String.format(java.util.Locale.US, "%.1f", v);

@@ -8,15 +8,10 @@ import com.badlogic.gdx.net.HttpRequestBuilder;
 import com.badlogic.gdx.net.HttpStatus;
 import com.badlogic.gdx.utils.ObjectMap;
 
-/**
- * Razred za nalaganje in predpomnjenje mapnih tile-ov.
- * Tile-i se nalagajo asinhrono preko HTTP zahtevkov.
- */
 public class TileManager {
 
     private static final int TILE_SIZE = 256;
 
-    //CARTO XYZ schema
     private static final String TILE_URL =
         "https://basemaps.cartocdn.com/light_all/%d/%d/%d.png";
 
@@ -36,7 +31,7 @@ public class TileManager {
         if (y > max) return max;
         return y;
     }
-    // Cache za že naložene tile-e, da se ne nalagajo večkrat
+
     private final ObjectMap<String, Texture> cache = new ObjectMap<>();
     private final ObjectMap<String, Boolean> loading = new ObjectMap<>();
     private final Texture placeholder;
@@ -54,7 +49,6 @@ public class TileManager {
         int yy = clampY(y, zoom);
 
         String key = zoom + "_" + xx + "_" + yy;
-
         Texture ready = cache.get(key);
         if (ready != null) return ready;
 
@@ -81,7 +75,6 @@ public class TileManager {
                     }
 
                     byte[] bytes = httpResponse.getResult();
-
                     Gdx.app.postRunnable(() -> {
                         try {
                             Pixmap pixmap = new Pixmap(bytes, 0, bytes.length);
@@ -104,8 +97,6 @@ public class TileManager {
                     Gdx.app.log("TILES", "CANCELLED url=" + url);
                 }
             });
-
-            Gdx.app.log("TILES", "REQ " + url);
         }
 
         return placeholder;

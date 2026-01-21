@@ -3,7 +3,6 @@ package si.um.feri.vesligaj;
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.InputAdapter;
-import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
@@ -39,6 +38,8 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     private OrthographicCamera camera;
     private Viewport viewport;
+
+    // UI camera (screen-space HUD)
     private OrthographicCamera uiCamera;
     private Viewport uiViewport;
 
@@ -60,12 +61,24 @@ public class SmartCityTransit extends ApplicationAdapter {
     private BitmapFont font;
     private Stop selectedStop = null;
     private Bus selectedBus = null;
-
     private BusRoute selectedRoute = null;
+    private Array<BusRoute> stopRoutes = null; // routes that pass through selectedStop
     private static final float ROUTE_PICK_TOLERANCE = 14f;
 
     private Vector2 cameraTarget = null;
     private float uiTime = 0f;
+    private boolean showOnlySelected = false;
+
+
+    // HUD layout constants
+    private static final float HUD_PAD = 10f;
+    private static final float HUD_BOX_W = 380f;
+    private static final float HUD_BOX_H = 260f;
+    private static final float HUD_TEXT_X = 18f;
+    private static final float HUD_LINE_H = 22f;
+    private static final float HUD_SECTION_GAP = 12f;
+    private static final float HUD_ITEM_GAP = 6f;
+
 
     @Override
     public void create() {
@@ -107,7 +120,7 @@ public class SmartCityTransit extends ApplicationAdapter {
             routeStopIndex.put(r, new RouteStopIndex(r, r.stops, MAP_ZOOM));
         }
 
-        // create multiple buses (2 per route)
+        // create multiple buses
         buses = new Array<>();
         for (int i = 0; i < routes.size; i++) {
             BusRoute r = routes.get(i);
@@ -116,11 +129,8 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             float baseSpeed = 35f + i * 8f;
 
-            Bus b1 = new Bus(r, baseSpeed, total * 0.12f);
-            Bus b2 = new Bus(r, baseSpeed * 0.92f, total * 0.58f);
-
-            buses.add(b1);
-            buses.add(b2);
+            buses.add(new Bus(r, baseSpeed, total * 0.12f));
+            buses.add(new Bus(r, baseSpeed * 0.92f, total * 0.58f));
         }
 
         font = new BitmapFont();
@@ -147,6 +157,45 @@ public class SmartCityTransit extends ApplicationAdapter {
                 int dx = screenX - downScreenX;
                 int dy = screenY - downScreenY;
                 if (dx * dx + dy * dy <= 6 * 6) {
+
+                    // 0) HUD click (screen-space) has priority
+                    int hudAction = pickHudAction(screenX, screenY);
+
+                    if (hudAction == -1) { // TOGGLE
+                        showOnlySelected = !showOnlySelected;
+                        return true;
+                    }
+                    if (hudAction == -2) { // RESET
+                        selectedRoute = null;
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+                        return true;
+                    }
+                    if (hudAction >= 0) {
+                        BusRoute hudRoute = routes.get(hudAction);
+
+                        // toggle select
+                        if (selectedRoute == hudRoute) {
+                            selectedRoute = null;
+                            cameraTarget = null;
+                        } else {
+                            selectedRoute = hudRoute;
+                            cameraTarget = computeRouteCenter(hudRoute);
+                        }
+
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        return true;
+                    }
+
+                    if (isPointInsideHud(screenX, screenY)) {
+                        return true;
+                    }
+
+                    // Map click
                     Vector3 v = new Vector3(screenX, screenY, 0);
                     viewport.unproject(v);
 
@@ -155,6 +204,7 @@ public class SmartCityTransit extends ApplicationAdapter {
                     if (b != null) {
                         selectedBus = b;
                         selectedStop = null;
+                        stopRoutes = null;
 
                         selectedRoute = b.getRoute();
                         cameraTarget = computeRouteCenter(selectedRoute);
@@ -165,22 +215,28 @@ public class SmartCityTransit extends ApplicationAdapter {
                     selectedStop = pickStop(v.x, v.y);
                     if (selectedStop != null) {
                         selectedBus = null;
+                        selectedRoute = null;
+                        cameraTarget = null;
+                        stopRoutes = computeRoutesForStop(selectedStop);
                         return true;
                     }
 
-                    //hen pick route
+                    //then pick route
                     BusRoute r = pickRoute(v.x, v.y);
                     if (r != null) {
                         selectedRoute = r;
                         selectedBus = null;
                         selectedStop = null;
+                        stopRoutes = null;
 
                         cameraTarget = computeRouteCenter(r);
+                        return true;
                     }
                 }
 
                 return true;
             }
+
 
             @Override
             public boolean touchDragged(int screenX, int screenY, int pointer) {
@@ -210,7 +266,6 @@ public class SmartCityTransit extends ApplicationAdapter {
     @Override
     public void render() {
         float dt = Gdx.graphics.getDeltaTime();
-
         uiTime += dt;
 
         if (cameraTarget != null) {
@@ -220,12 +275,11 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
         camera.update();
 
-        // update buses
         for (int i = 0; i < buses.size; i++) {
             buses.get(i).update(dt);
         }
 
-        //stop checks after movement
+        // --- STOP CHECK (buses wait at stations) ---
         for (int i = 0; i < buses.size; i++) {
             Bus b = buses.get(i);
             RouteStopIndex idx = routeStopIndex.get(b.getRoute());
@@ -291,6 +345,20 @@ public class SmartCityTransit extends ApplicationAdapter {
         return c;
     }
 
+    private Array<BusRoute> computeRoutesForStop(Stop stop) {
+        Array<BusRoute> out = new Array<>();
+        if (stop == null) return out;
+
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+            if (r.stops != null && r.stops.contains(stop, true)) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+
     private void drawRoutes() {
         shapeRenderer.setProjectionMatrix(camera.combined);
 
@@ -298,10 +366,16 @@ public class SmartCityTransit extends ApplicationAdapter {
         float shadow = 7.0f * camera.zoom;
         float fadedMult = 0.65f;
 
-        // SHADOW
+        // shadow
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         for (int r = 0; r < routes.size; r++) {
+
             BusRoute route = routes.get(r);
+
+            if (stopRoutes != null && stopRoutes.size > 0 && !stopRoutes.contains(route, true)) continue;
+
+            if (showOnlySelected && selectedRoute != null && route != selectedRoute) continue;
+
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float shadowAlpha = isSelected ? 0.40f : 0.08f;
 
@@ -309,16 +383,21 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = shadow * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // MAIN
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         for (int r = 0; r < routes.size; r++) {
             BusRoute route = routes.get(r);
+
+            if (stopRoutes != null && stopRoutes.size > 0 && !stopRoutes.contains(route, true)) continue;
+
+            if (showOnlySelected && selectedRoute != null && route != selectedRoute) continue;
+
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float alpha = isSelected ? 0.95f : 0.12f;
 
@@ -326,13 +405,13 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = base * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // EXTRA highlight
         if (selectedRoute != null) {
             int selIndex = routes.indexOf(selectedRoute, true);
             Array<Vector2> pts = selectedRoute.getWorldPoints();
@@ -353,6 +432,8 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
     }
 
+
+
     private void drawStopsAndBuses() {
         shapeRenderer.setProjectionMatrix(camera.combined);
 
@@ -363,6 +444,13 @@ public class SmartCityTransit extends ApplicationAdapter {
         // stops
         for (int i = 0; i < stops.size; i++) {
             Stop s = stops.get(i);
+
+            if (showOnlySelected && selectedRoute != null) {
+                if (selectedRoute.stops != null && !selectedRoute.stops.contains(s, true)) {
+                    continue;
+                }
+            }
+
             float x = (float) GeoUtils.lonToWorldX(s.point.lon, MAP_ZOOM);
             float y = (float) GeoUtils.latToWorldY(s.point.lat, MAP_ZOOM);
 
@@ -376,6 +464,11 @@ public class SmartCityTransit extends ApplicationAdapter {
         // buses
         for (int i = 0; i < buses.size; i++) {
             Bus b = buses.get(i);
+
+            if (showOnlySelected && selectedRoute != null && b.getRoute() != selectedRoute) {
+                continue;
+            }
+
             Vector2 p = b.getPosition();
 
             boolean routeSelected = (selectedRoute != null);
@@ -384,27 +477,27 @@ public class SmartCityTransit extends ApplicationAdapter {
             float busAlpha = isOnSelectedRoute ? 0.95f : 0.20f;
             float haloAlpha = isOnSelectedRoute ? 0.30f : 0.08f;
 
-            // halo
             shapeRenderer.setColor(0f, 0f, 0f, haloAlpha);
             shapeRenderer.circle(p.x, p.y, 9.0f * camera.zoom, 20);
 
-            // body (ADDED: if waiting, tint to yellow so you SEE stop)
             int routeIndex = routes.indexOf(b.getRoute(), true);
+
             if (b.isWaiting()) {
+                // yellow tint when stopped
                 shapeRenderer.setColor(1f, 0.85f, 0.25f, busAlpha);
             } else {
                 setRouteColor(shapeRenderer, routeIndex, busAlpha);
             }
+
             shapeRenderer.circle(p.x, p.y, 6.5f * camera.zoom, 20);
 
-            // small dot
             shapeRenderer.setColor(1f, 1f, 1f, busAlpha);
             shapeRenderer.circle(p.x, p.y, 2.0f * camera.zoom, 12);
         }
 
         shapeRenderer.end();
 
-        // selection rings
+        // selected stop
         if (selectedStop != null) {
             float sx = (float) GeoUtils.lonToWorldX(selectedStop.point.lon, MAP_ZOOM);
             float sy = (float) GeoUtils.latToWorldY(selectedStop.point.lat, MAP_ZOOM);
@@ -415,6 +508,7 @@ public class SmartCityTransit extends ApplicationAdapter {
             shapeRenderer.end();
         }
 
+        // selected bus
         if (selectedBus != null) {
             Vector2 p = selectedBus.getPosition();
             shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
@@ -426,34 +520,44 @@ public class SmartCityTransit extends ApplicationAdapter {
         // next stop highlight
         if (selectedBus != null) {
             BusRoute r = selectedBus.getRoute();
+
             RouteStopIndex idx = routeStopIndex.get(r);
             if (idx != null) {
                 Stop next = idx.getNextStop(selectedBus.getDistanceOnRoute());
                 if (next != null) {
-                    float sx = (float) GeoUtils.lonToWorldX(next.point.lon, MAP_ZOOM);
-                    float sy = (float) GeoUtils.latToWorldY(next.point.lat, MAP_ZOOM);
 
-                    float pulse = 0.5f + 0.5f * (float) Math.sin(uiTime * 4.0f);
-                    float radius = (STOP_RADIUS + 10f + pulse * 6f) * camera.zoom;
+                    if (!showOnlySelected || selectedRoute == null || selectedRoute == r) {
+                        float sx = (float) GeoUtils.lonToWorldX(next.point.lon, MAP_ZOOM);
+                        float sy = (float) GeoUtils.latToWorldY(next.point.lat, MAP_ZOOM);
 
-                    shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
-                    shapeRenderer.setColor(1f, 1f, 0.2f, 0.85f);
-                    shapeRenderer.circle(sx, sy, radius, 30);
+                        float pulse = 0.5f + 0.5f * (float) Math.sin(uiTime * 4.0f);
+                        float radius = (STOP_RADIUS + 10f + pulse * 6f) * camera.zoom;
 
-                    shapeRenderer.setColor(1f, 1f, 1f, 0.55f);
-                    shapeRenderer.circle(sx, sy, (STOP_RADIUS + 6f) * camera.zoom, 24);
-                    shapeRenderer.end();
+                        shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
+                        shapeRenderer.setColor(1f, 1f, 0.2f, 0.85f);
+                        shapeRenderer.circle(sx, sy, radius, 30);
+
+                        shapeRenderer.setColor(1f, 1f, 1f, 0.55f);
+                        shapeRenderer.circle(sx, sy, (STOP_RADIUS + 6f) * camera.zoom, 24);
+                        shapeRenderer.end();
+                    }
                 }
             }
         }
 
-        // labels
         if (camera.zoom <= 1.2f) {
             batch.setProjectionMatrix(camera.combined);
             batch.begin();
 
             for (int i = 0; i < stops.size; i++) {
                 Stop s = stops.get(i);
+
+                if (showOnlySelected && selectedRoute != null) {
+                    if (selectedRoute.stops != null && !selectedRoute.stops.contains(s, true)) {
+                        continue;
+                    }
+                }
+
                 float x = (float) GeoUtils.lonToWorldX(s.point.lon, MAP_ZOOM);
                 float y = (float) GeoUtils.latToWorldY(s.point.lat, MAP_ZOOM);
                 font.draw(batch, s.name, x + (10f * camera.zoom), y + (12f * camera.zoom));
@@ -469,54 +573,185 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
     }
 
+
     private void drawHud() {
         uiViewport.apply();
         uiCamera.update();
 
+        final float pad = HUD_PAD;
+        final float hudX = pad;
+        final float hudW = HUD_BOX_W;
+
+        final float topMargin = 14f;
+        final float innerPadX = 12f;
+        final float innerPadY = 12f;
+
+        final float x = hudX + innerPadX;
+        final float lineH = HUD_LINE_H;
+        final float sectionGap = HUD_SECTION_GAP;
+        final float itemGap = HUD_ITEM_GAP;
+        final float dividerGap = HUD_SECTION_GAP;
+
+
+        boolean hasInfo = (selectedBus != null) || (selectedStop != null);
+
+        int linesControls = 2; // checkbox + reset
+        int linesHeader = 1;   // "LINES"
+        int linesRoutes = routes.size;
+        int linesInfoHeader = hasInfo ? 1 : 0;
+
+        int linesBus = 0;
+        if (selectedBus != null) {
+            linesBus += 1; // "Selected BUS"
+            linesBus += 1; // Line
+            linesBus += 1; // Speed
+            linesBus += 1; // Next stop
+
+            RouteStopIndex idxTmp = routeStopIndex.get(selectedBus.getRoute());
+            float etaSecTmp = -1f;
+            if (idxTmp != null) {
+                float nextDist = idxTmp.getNextStopDistance(selectedBus.getDistanceOnRoute());
+                float busDist = selectedBus.getDistanceOnRoute();
+                float remain = nextDist - busDist;
+                float total = selectedBus.getRoute().getTotalLength();
+                if (remain < 0f && total > 0f) remain += total;
+                float spd = selectedBus.getSpeedPx();
+                if (spd > 0.001f) etaSecTmp = remain / spd;
+            }
+            if (etaSecTmp >= 0f) linesBus += 1;
+            if (selectedBus.isWaiting()) linesBus += 1;
+
+            linesBus += 1;
+        }
+
+        int linesStop = 0;
+        if (selectedStop != null) {
+            linesStop += 1; // "Selected STOP"
+            linesStop += 1; // Name
+            linesStop += 1; // Lat/Lon
+        }
+
+        float h = 0f;
+        h += topMargin;
+        h += innerPadY;
+        h += linesControls * lineH;
+        h += dividerGap;
+        h += 1.5f;
+        h += sectionGap;
+
+        h += linesHeader * (lineH + 2f);
+        h += linesRoutes * lineH;
+        h += dividerGap;
+        h += 1.5f;
+        h += sectionGap;
+
+        if (hasInfo) {
+            h += linesInfoHeader * (lineH + 2f);
+            h += linesBus * lineH;
+            h += linesStop * lineH;
+        } else {
+            h += 6f;
+        }
+
+        h += innerPadY;
+
+        float hudH = Math.max(160f, Math.min(h, uiViewport.getWorldHeight() - 2f * pad));
+
+        float hudY = uiViewport.getWorldHeight() - hudH - pad;
+
+        // ---------- PANEL (shadow + body + top band) ----------
         shapeRenderer.setProjectionMatrix(uiCamera.combined);
+
+        // shadow
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
-        shapeRenderer.setColor(0f, 0f, 0f, 0.65f);
-
-        float pad = 10f;
-        float boxW = 380f;
-        float boxH = 210f;
-
-        shapeRenderer.rect(
-            pad,
-            uiViewport.getWorldHeight() - boxH - pad,
-            boxW,
-            boxH
-        );
+        shapeRenderer.setColor(0f, 0f, 0f, 0.25f);
+        shapeRenderer.rect(hudX + 4f, hudY - 4f, hudW, hudH);
         shapeRenderer.end();
 
+        // body
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        shapeRenderer.setColor(0.07f, 0.07f, 0.08f, 0.78f);
+        shapeRenderer.rect(hudX, hudY, hudW, hudH);
+        shapeRenderer.end();
+
+        // subtle top band
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        shapeRenderer.setColor(1f, 1f, 1f, 0.05f);
+        shapeRenderer.rect(hudX, hudY + hudH - 30f, hudW, 30f);
+        shapeRenderer.end();
+
+        // dividers x range
+        float dividerX1 = hudX + 10f;
+        float dividerX2 = hudX + hudW - 10f;
+
+        // ---------- TEXT ----------
         batch.setProjectionMatrix(uiCamera.combined);
         batch.begin();
 
-        float x = 18f;
-        float y = uiViewport.getWorldHeight() - 18f;
+        float y = hudY + hudH - topMargin;
 
+        // --- CONTROLS ---
+        String chk = showOnlySelected ? "[x] " : "[ ] ";
+        font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
+        font.draw(batch, chk + "Show only selected line", x, y);
+        y -= lineH;
+
+        font.setColor(0.98f, 0.75f, 0.75f, 0.95f);
+        font.draw(batch, "Reset selection", x, y);
+        y -= lineH;
+
+        // divider1
+        y -= (sectionGap * 0.5f);
+        float divider1Y = y;
+        y -= dividerGap;
+
+        // --- LINES ---
         font.setColor(1f, 1f, 1f, 0.95f);
-
-        font.draw(batch, "SmartCityTransit", x, y);
-        y -= 20f;
-
-        font.draw(batch, "Lines:", x, y);
-        y -= 16f;
+        font.draw(batch, "LINES", x, y);
+        y -= (lineH + 2f);
 
         for (int i = 0; i < routes.size; i++) {
             BusRoute r = routes.get(i);
-
             boolean sel = (r == selectedRoute);
-            String marker = sel ? "> " : "  ";
 
-            font.draw(batch,
-                marker + r.id + " - " + r.name + (sel ? "  [SELECTED]" : ""),
-                x, y
-            );
-            y -= 16f;
+            if (sel) {
+                batch.end();
+                shapeRenderer.setProjectionMatrix(uiCamera.combined);
+                shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+                shapeRenderer.setColor(1f, 1f, 1f, 0.06f);
+                shapeRenderer.rect(hudX + 8f, y - lineH + 3f, hudW - 16f, lineH + 6f);
+                shapeRenderer.end();
+                batch.begin();
+            }
+
+            // color bullet
+            batch.end();
+            shapeRenderer.setProjectionMatrix(uiCamera.combined);
+            shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+            setRouteColor(shapeRenderer, i, sel ? 0.95f : 0.55f);
+            shapeRenderer.circle(hudX + 16f, y - 6f, 4.5f, 18);
+            shapeRenderer.end();
+            batch.begin();
+
+            // text
+            font.setColor(sel ? 1f : 0.88f, sel ? 1f : 0.88f, sel ? 1f : 0.88f, sel ? 0.98f : 0.88f);
+            String marker = sel ? "> " : "  ";
+            font.draw(batch, marker + r.id + " - " + r.name, x + 8f, y);
+
+            y -= lineH;
         }
 
-        y -= 6f;
+        // divider2
+        y -= (sectionGap * 0.5f);
+        float divider2Y = y;
+        y -= dividerGap;
+
+        // --- INFO ---
+        if (hasInfo) {
+            font.setColor(1f, 1f, 1f, 0.95f);
+            font.draw(batch, "INFO", x, y);
+            y -= (lineH + 2f);
+        }
 
         if (selectedBus != null) {
             BusRoute r = selectedBus.getRoute();
@@ -537,51 +772,150 @@ public class SmartCityTransit extends ApplicationAdapter {
                 if (spd > 0.001f) etaSec = remain / spd;
             }
 
+            int routeIndex = routes.indexOf(r, true);
+
+            batch.end();
+            shapeRenderer.setProjectionMatrix(uiCamera.combined);
+            shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+            setRouteColor(shapeRenderer, routeIndex, 0.95f);
+            shapeRenderer.rect(hudX + 10f, y - 11f, 4f, 12f);
+            shapeRenderer.end();
+            batch.begin();
+
             font.setColor(1f, 1f, 1f, 0.95f);
-            font.draw(batch, "Selected BUS", x, y);
-            y -= 16f;
+            font.draw(batch, "Selected BUS", x, y); y -= (lineH + itemGap);
 
-            font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
-            font.draw(batch, "Line: " + r.id + " - " + r.name, x, y);
-            y -= 16f;
-
-            font.draw(batch, "Speed: " + format1(selectedBus.getSpeedPx()) + " px/s", x, y);
-            y -= 16f;
-
-            font.draw(batch, "Next stop: " + (next != null ? next.name : "-"), x, y);
-            y -= 16f;
+            font.draw(batch, "Line: " + r.id + " - " + r.name, x, y); y -= (lineH + itemGap);
+            font.draw(batch, "Speed: " + format1(selectedBus.getSpeedPx()) + " px/s", x, y); y -= (lineH + itemGap);
+            font.draw(batch, "Next stop: " + (next != null ? next.name : "-"), x, y); y -= (lineH + itemGap);
 
             if (etaSec >= 0f) {
                 font.draw(batch, "ETA: " + format1(etaSec) + " s", x, y);
-                y -= 16f;
+                y -= (lineH + itemGap);
             }
 
             if (selectedBus.isWaiting()) {
-                font.draw(batch, "Status: STOPPED (" + format1(selectedBus.getWaitTimer()) + "s)", x, y);
-                y -= 16f;
+                font.draw(batch, "Status: STOPPED (" + format1(selectedBus.getWaitTimer()) + " s)", x, y);
+                y -= (lineH + itemGap);
             }
 
-            y -= 6f;
+            y -= sectionGap;
         }
 
         if (selectedStop != null) {
             font.setColor(1f, 1f, 1f, 0.95f);
-            font.draw(batch, "Selected STOP", x, y);
-            y -= 16f;
+            font.draw(batch, "Selected STOP", x, y); y -= (lineH + itemGap);
 
             font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
-            font.draw(batch, "Name: " + selectedStop.name, x, y);
-            y -= 16f;
+            font.draw(batch, "Name: " + selectedStop.name, x, y); y -= (lineH + itemGap);
 
             font.draw(batch,
                 "Lat: " + format5(selectedStop.point.lat) + "  Lon: " + format5(selectedStop.point.lon),
                 x, y
             );
-            y -= 16f;
+            y -= (lineH + itemGap);
         }
 
         batch.end();
+
+        shapeRenderer.setProjectionMatrix(uiCamera.combined);
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        shapeRenderer.setColor(1f, 1f, 1f, 0.06f);
+
+        shapeRenderer.rectLine(dividerX1, divider1Y, dividerX2, divider1Y, 1.2f);
+        shapeRenderer.rectLine(dividerX1, divider2Y, dividerX2, divider2Y, 1.2f);
+
+        shapeRenderer.end();
+
         viewport.apply();
+    }
+
+    private boolean isPointInsideHud(int screenX, int screenY) {
+        Vector3 v = new Vector3(screenX, screenY, 0);
+        uiViewport.unproject(v);
+
+        float hudLeft = HUD_PAD;
+        float hudRight = HUD_PAD + HUD_BOX_W;
+        float hudTop = uiViewport.getWorldHeight() - HUD_PAD;
+        float hudBottom = hudTop - HUD_BOX_H;
+
+        return v.x >= hudLeft && v.x <= hudRight && v.y >= hudBottom && v.y <= hudTop;
+    }
+
+    private BusRoute pickRouteFromHud(int screenX, int screenY) {
+        Vector3 v = new Vector3(screenX, screenY, 0);
+        uiViewport.unproject(v);
+
+        float hudLeft = HUD_PAD;
+        float hudRight = HUD_PAD + HUD_BOX_W;
+        float hudTop = uiViewport.getWorldHeight() - HUD_PAD;
+        float hudBottom = hudTop - HUD_BOX_H;
+
+        if (v.x < hudLeft || v.x > hudRight || v.y < hudBottom || v.y > hudTop) return null;
+
+        float y = uiViewport.getWorldHeight() - 18f;
+        y -= 20f;
+        y -= HUD_LINE_H;
+
+        for (int i = 0; i < routes.size; i++) {
+            float lineTop = y;
+            float lineBottom = y - HUD_LINE_H;
+
+            float extra = 3f;
+            if (v.y <= (lineTop + extra) && v.y >= (lineBottom - extra)) {
+                if (v.x >= HUD_TEXT_X - 6f && v.x <= hudRight - 10f) {
+                    return routes.get(i);
+                }
+            }
+
+            y -= HUD_LINE_H;
+        }
+
+        return null;
+    }
+
+    private int pickHudAction(int screenX, int screenY) {
+        Vector3 v = new Vector3(screenX, screenY, 0);
+        uiViewport.unproject(v);
+
+        float hudLeft = HUD_PAD;
+        float hudRight = HUD_PAD + HUD_BOX_W;
+        float hudTop = uiViewport.getWorldHeight() - HUD_PAD;
+        float hudBottom = hudTop - HUD_BOX_H;
+
+        if (v.x < hudLeft || v.x > hudRight || v.y < hudBottom || v.y > hudTop) return -999;
+
+        float extra = 3f;
+
+        float y = uiViewport.getWorldHeight() - 18f;
+        y -= 20f;
+
+        float toggleTop = y;
+        float toggleBottom = y - HUD_LINE_H;
+        if (v.y <= (toggleTop + extra) && v.y >= (toggleBottom - extra)) return -1;
+        y -= HUD_LINE_H;
+
+        float resetTop = y;
+        float resetBottom = y - HUD_LINE_H;
+        if (v.y <= (resetTop + extra) && v.y >= (resetBottom - extra)) return -2;
+        y -= (HUD_LINE_H + 6f);
+
+        y -= HUD_LINE_H;
+
+        for (int i = 0; i < routes.size; i++) {
+            float lineTop = y;
+            float lineBottom = y - HUD_LINE_H;
+
+            if (v.y <= (lineTop + extra) && v.y >= (lineBottom - extra)) {
+                if (v.x >= HUD_TEXT_X - 6f && v.x <= hudRight - 10f) {
+                    return i;
+                }
+            }
+
+            y -= HUD_LINE_H;
+        }
+
+        return -998;
     }
 
     private Bus pickBus(float worldX, float worldY) {
@@ -669,7 +1003,9 @@ public class SmartCityTransit extends ApplicationAdapter {
         return (bestDist2 <= tol2) ? best : null;
     }
 
-    private float pointToSegmentDist2(float px, float py, float ax, float ay, float bx, float by) {
+    private float pointToSegmentDist2(float px, float py,
+                                      float ax, float ay,
+                                      float bx, float by) {
         float abx = bx - ax;
         float aby = by - ay;
         float apx = px - ax;

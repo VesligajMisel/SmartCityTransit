@@ -15,8 +15,6 @@ public class TileManager {
 
     private static final String TILE_URL =
         "https://basemaps.cartocdn.com/light_all/%d/%d/%d.png";
-
-    // Soft limit to prevent runaway RAM usage when panning/zooming a lot
     private static final int MAX_TILES = 800;
 
     private static int maxIndex(int zoom) {

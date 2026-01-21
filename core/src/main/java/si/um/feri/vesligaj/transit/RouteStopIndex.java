@@ -96,4 +96,15 @@ public class RouteStopIndex {
         }
         return ordered.isEmpty() ? 0f : ordered.get(ordered.size() - 1).distance;
     }
+
+    public float getDistanceForStop(Stop stop) {
+        if (stop == null) return -1f;
+        for (int i = 0; i < ordered.size(); i++) {
+            StopOnRoute sr = ordered.get(i);
+
+            if (sr.stop == stop) return sr.distance;
+            if (sr.stop != null && stop.id != null && stop.id.equals(sr.stop.id)) return sr.distance;
+        }
+        return -1f;
+    }
 }

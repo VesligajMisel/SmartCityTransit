@@ -3,7 +3,6 @@ package si.um.feri.vesligaj;
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.InputAdapter;
-import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
@@ -15,6 +14,10 @@ import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.ObjectMap;
 import com.badlogic.gdx.utils.viewport.FitViewport;
 import com.badlogic.gdx.utils.viewport.Viewport;
+
+import si.um.feri.vesligaj.data.SampleDataSource;
+import si.um.feri.vesligaj.data.TransitDataSource;
+import si.um.feri.vesligaj.data.GtfsDataSource;
 import si.um.feri.vesligaj.map.GeoUtils;
 import si.um.feri.vesligaj.map.TileManager;
 import si.um.feri.vesligaj.transit.Bus;
@@ -23,6 +26,7 @@ import si.um.feri.vesligaj.transit.RouteStopIndex;
 import si.um.feri.vesligaj.transit.SampleRoutes;
 import si.um.feri.vesligaj.transit.SampleStops;
 import si.um.feri.vesligaj.transit.Stop;
+import si.um.feri.vesligaj.ui.HudPanel;
 
 public class SmartCityTransit extends ApplicationAdapter {
 
@@ -39,6 +43,8 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     private OrthographicCamera camera;
     private Viewport viewport;
+
+    // UI camera (screen-space HUD)
     private OrthographicCamera uiCamera;
     private Viewport uiViewport;
 
@@ -60,18 +66,40 @@ public class SmartCityTransit extends ApplicationAdapter {
     private BitmapFont font;
     private Stop selectedStop = null;
     private Bus selectedBus = null;
-
     private BusRoute selectedRoute = null;
+    private Array<BusRoute> stopRoutes = null; // routes that pass through selectedStop
     private static final float ROUTE_PICK_TOLERANCE = 14f;
 
     private Vector2 cameraTarget = null;
     private float uiTime = 0f;
+    private boolean showOnlySelected = false;
+    private boolean followSelectedBus = false;
+    private final Vector2 followTmp = new Vector2();
+
+
+    // HUD layout constants
+    private static final float HUD_PAD = 10f;
+    private static final float HUD_BOX_W = 380f;
+    private static final float HUD_BOX_H = 260f;
+    private static final float HUD_TEXT_X = 18f;
+    private static final float HUD_LINE_H = 22f;
+    private static final float HUD_SECTION_GAP = 12f;
+    private static final float HUD_ITEM_GAP = 6f;
+    private HudPanel hudPanel;
+    private TransitDataSource dataSource;
+    private TransitDataSource demoSource;
+    private TransitDataSource gtfsSource;
+    private boolean useGtfs = false;
+
 
     @Override
     public void create() {
         batch = new SpriteBatch();
         shapeRenderer = new ShapeRenderer();
         tileManager = new TileManager();
+
+        hudPanel = new HudPanel();
+        hudPanel.setShowOnlySelected(showOnlySelected);
 
         camera = new OrthographicCamera();
         viewport = new FitViewport(1280, 720, camera);
@@ -100,6 +128,14 @@ public class SmartCityTransit extends ApplicationAdapter {
         stops = SampleStops.ljubljanaStops();
         routes = SampleRoutes.ljubljanaRoutes(stops);
 
+        // -- DEMO IN REAL --
+        demoSource = new SampleDataSource();
+        gtfsSource = new GtfsDataSource(Gdx.files.internal("Data"));
+
+        dataSource = demoSource;
+        reloadData();
+
+
         // build world cache + stop index for each route
         for (int i = 0; i < routes.size; i++) {
             BusRoute r = routes.get(i);
@@ -107,7 +143,6 @@ public class SmartCityTransit extends ApplicationAdapter {
             routeStopIndex.put(r, new RouteStopIndex(r, r.stops, MAP_ZOOM));
         }
 
-        // create multiple buses (2 per route)
         buses = new Array<>();
         for (int i = 0; i < routes.size; i++) {
             BusRoute r = routes.get(i);
@@ -116,11 +151,8 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             float baseSpeed = 35f + i * 8f;
 
-            Bus b1 = new Bus(r, baseSpeed, total * 0.12f);
-            Bus b2 = new Bus(r, baseSpeed * 0.92f, total * 0.58f);
-
-            buses.add(b1);
-            buses.add(b2);
+            buses.add(new Bus(r, baseSpeed, total * 0.12f));
+            buses.add(new Bus(r, baseSpeed * 0.92f, total * 0.58f));
         }
 
         font = new BitmapFont();
@@ -147,35 +179,104 @@ public class SmartCityTransit extends ApplicationAdapter {
                 int dx = screenX - downScreenX;
                 int dy = screenY - downScreenY;
                 if (dx * dx + dy * dy <= 6 * 6) {
+
+                    //HUD clicK
+                    HudPanel.ClickResult cr = hudPanel.handleClick(screenX, screenY, uiViewport, routes);
+
+                    if (cr.type == HudPanel.ClickType.SWITCH_SOURCE) {
+                        useGtfs = !useGtfs;
+                        dataSource = useGtfs ? gtfsSource : demoSource;
+                        reloadData();
+
+                        // reset selection
+                        selectedRoute = null;
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.TOGGLE_SHOW_ONLY_SELECTED) {
+                        showOnlySelected = !showOnlySelected;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.RESET) {
+                        selectedRoute = null;
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+                        followSelectedBus = false;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.SELECT_ROUTE && cr.route != null) {
+                        BusRoute hudRoute = cr.route;
+
+                        if (selectedRoute == hudRoute) {
+                            selectedRoute = null;
+                            cameraTarget = null;
+                        } else {
+                            selectedRoute = hudRoute;
+                            cameraTarget = computeRouteCenter(hudRoute);
+                        }
+
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        followSelectedBus = false;
+                        return true;
+                    }
+
+                    if (hudPanel.isInsideHud(screenX, screenY, uiViewport)) {
+                        return true;
+                    }
+
+
+                    // Map click
                     Vector3 v = new Vector3(screenX, screenY, 0);
                     viewport.unproject(v);
 
-                    //try pick bus first
+                    //pick bus first
                     Bus b = pickBus(v.x, v.y);
                     if (b != null) {
                         selectedBus = b;
                         selectedStop = null;
+                        stopRoutes = null;
 
                         selectedRoute = b.getRoute();
-                        cameraTarget = computeRouteCenter(selectedRoute);
+
+                        //Follow bus
+                        followSelectedBus = true;
+                        cameraTarget = null;
+
                         return true;
                     }
 
-                    //then pick stop
+
+                    //pick stop
                     selectedStop = pickStop(v.x, v.y);
                     if (selectedStop != null) {
                         selectedBus = null;
+                        selectedRoute = null;
+                        cameraTarget = null;
+                        stopRoutes = computeRoutesForStop(selectedStop);
+                        followSelectedBus = false;
                         return true;
                     }
 
-                    //hen pick route
+                    //pick route
                     BusRoute r = pickRoute(v.x, v.y);
                     if (r != null) {
                         selectedRoute = r;
                         selectedBus = null;
                         selectedStop = null;
+                        stopRoutes = null;
 
                         cameraTarget = computeRouteCenter(r);
+                        return true;
                     }
                 }
 
@@ -207,30 +308,79 @@ public class SmartCityTransit extends ApplicationAdapter {
         });
     }
 
+    private void reloadData() {
+        // clear selections
+        selectedRoute = null;
+        selectedBus = null;
+        selectedStop = null;
+        stopRoutes = null;
+        cameraTarget = null;
+
+        // load data
+        stops = dataSource.loadStops();
+        routes = dataSource.loadRoutes(stops);
+
+        Gdx.app.log("DATA", "useGtfs=" + useGtfs
+            + " stops=" + (stops == null ? -1 : stops.size)
+            + " routes=" + (routes == null ? -1 : routes.size)
+            + " buses=" + (buses == null ? -1 : buses.size));
+
+        // rebuild cache + stop index
+        routeStopIndex.clear();
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+            r.rebuildWorld(MAP_ZOOM);
+            routeStopIndex.put(r, new RouteStopIndex(r, r.stops, MAP_ZOOM));
+        }
+
+        //create buses (DEMO + GTFS)
+        buses = new Array<>();
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+            float total = r.getTotalLength();
+            if (total <= 0f) continue;
+
+            float baseSpeed = 35f + (i % 6) * 6f;
+            buses.add(new Bus(r, baseSpeed, total * 0.12f));
+            buses.add(new Bus(r, baseSpeed * 0.92f, total * 0.58f));
+        }
+    }
+
+
     @Override
     public void render() {
         float dt = Gdx.graphics.getDeltaTime();
-
         uiTime += dt;
 
-        if (cameraTarget != null) {
-            float lerp = 0.05f;
-            camera.position.x += (cameraTarget.x - camera.position.x) * lerp;
-            camera.position.y += (cameraTarget.y - camera.position.y) * lerp;
-        }
-        camera.update();
-
-        // update buses
+        //posodobi buse
         for (int i = 0; i < buses.size; i++) {
             buses.get(i).update(dt);
         }
 
-        //stop checks after movement
+        //STOP CHECK (so buses wait at stations)
         for (int i = 0; i < buses.size; i++) {
             Bus b = buses.get(i);
             RouteStopIndex idx = routeStopIndex.get(b.getRoute());
             b.checkStop(idx);
         }
+
+        //premakni kamero
+        Vector2 target = null;
+
+        if (followSelectedBus && selectedBus != null && !dragging) {
+            followTmp.set(selectedBus.getPosition());
+            target = followTmp;
+        } else if (cameraTarget != null) {
+            target = cameraTarget;
+        }
+
+        if (target != null) {
+            float lerp = 0.07f; // malo bolj "snappy" za follow
+            camera.position.x += (target.x - camera.position.x) * lerp;
+            camera.position.y += (target.y - camera.position.y) * lerp;
+        }
+
+        camera.update();
 
         Gdx.gl.glClearColor(0.08f, 0.08f, 0.10f, 1f);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
@@ -238,6 +388,7 @@ public class SmartCityTransit extends ApplicationAdapter {
         viewport.apply();
         batch.setProjectionMatrix(camera.combined);
 
+        // visible bounds
         float halfW = viewport.getWorldWidth() * 0.5f * camera.zoom;
         float halfH = viewport.getWorldHeight() * 0.5f * camera.zoom;
 
@@ -276,7 +427,20 @@ public class SmartCityTransit extends ApplicationAdapter {
         drawStopsAndBuses();
 
         // ---- HUD ----
-        drawHud();
+        hudPanel.setShowOnlySelected(showOnlySelected);
+        hudPanel.draw(
+            uiViewport,
+            uiCamera,
+            shapeRenderer,
+            batch,
+            font,
+            routes,
+            selectedRoute,
+            selectedBus,
+            selectedStop,
+            routeStopIndex,
+            this::setRouteColor
+        );
     }
 
     private Vector2 computeRouteCenter(BusRoute route) {
@@ -291,6 +455,29 @@ public class SmartCityTransit extends ApplicationAdapter {
         return c;
     }
 
+    private Array<BusRoute> computeRoutesForStop(Stop stop) {
+        if (stop == null) return null;
+
+        Array<BusRoute> res = new Array<>();
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+            if (r == null || r.stops == null) continue;
+
+            for (int j = 0; j < r.stops.size; j++) {
+                Stop s = r.stops.get(j);
+                if (s == stop) {
+                    res.add(r);
+                    break;
+                }
+                if (s != null && stop.id != null && stop.id.equals(s.id)) {
+                    res.add(r);
+                    break;
+                }
+            }
+        }
+        return res;
+    }
+
     private void drawRoutes() {
         shapeRenderer.setProjectionMatrix(camera.combined);
 
@@ -298,10 +485,18 @@ public class SmartCityTransit extends ApplicationAdapter {
         float shadow = 7.0f * camera.zoom;
         float fadedMult = 0.65f;
 
-        // SHADOW
+        // shadow
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         for (int r = 0; r < routes.size; r++) {
+
             BusRoute route = routes.get(r);
+
+            // --- show only selected ---
+            if (showOnlySelected && selectedRoute != null && route != selectedRoute) continue;
+
+            // --- stop filter ---
+            if (stopRoutes != null && stopRoutes.size > 0 && !stopRoutes.contains(route, true)) continue;
+
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float shadowAlpha = isSelected ? 0.40f : 0.08f;
 
@@ -309,16 +504,24 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = shadow * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // MAIN
+        // main colored
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         for (int r = 0; r < routes.size; r++) {
             BusRoute route = routes.get(r);
+
+            // --- show only selected ---
+            if (showOnlySelected && selectedRoute != null && route != selectedRoute) continue;
+
+            // --- stop filter (selected stop) ---
+            if (stopRoutes != null && stopRoutes.size > 0 && !stopRoutes.contains(route, true)) continue;
+
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float alpha = isSelected ? 0.95f : 0.12f;
 
@@ -326,13 +529,14 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = base * (isSelected ? 1.0f : fadedMult);
+
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // EXTRA highlight
+        // highlight for selected route
         if (selectedRoute != null) {
             int selIndex = routes.indexOf(selectedRoute, true);
             Array<Vector2> pts = selectedRoute.getWorldPoints();
@@ -384,27 +588,27 @@ public class SmartCityTransit extends ApplicationAdapter {
             float busAlpha = isOnSelectedRoute ? 0.95f : 0.20f;
             float haloAlpha = isOnSelectedRoute ? 0.30f : 0.08f;
 
-            // halo
             shapeRenderer.setColor(0f, 0f, 0f, haloAlpha);
             shapeRenderer.circle(p.x, p.y, 9.0f * camera.zoom, 20);
 
-            // body (ADDED: if waiting, tint to yellow so you SEE stop)
             int routeIndex = routes.indexOf(b.getRoute(), true);
+
             if (b.isWaiting()) {
+                // yellow tint when stopped
                 shapeRenderer.setColor(1f, 0.85f, 0.25f, busAlpha);
             } else {
                 setRouteColor(shapeRenderer, routeIndex, busAlpha);
             }
+
             shapeRenderer.circle(p.x, p.y, 6.5f * camera.zoom, 20);
 
-            // small dot
             shapeRenderer.setColor(1f, 1f, 1f, busAlpha);
             shapeRenderer.circle(p.x, p.y, 2.0f * camera.zoom, 12);
         }
 
         shapeRenderer.end();
 
-        // selection rings
+        // selected stop
         if (selectedStop != null) {
             float sx = (float) GeoUtils.lonToWorldX(selectedStop.point.lon, MAP_ZOOM);
             float sy = (float) GeoUtils.latToWorldY(selectedStop.point.lat, MAP_ZOOM);
@@ -415,6 +619,7 @@ public class SmartCityTransit extends ApplicationAdapter {
             shapeRenderer.end();
         }
 
+        // selected bus
         if (selectedBus != null) {
             Vector2 p = selectedBus.getPosition();
             shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
@@ -469,120 +674,66 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
     }
 
-    private void drawHud() {
-        uiViewport.apply();
-        uiCamera.update();
+    // ---------- HUD CLICK HELPERS ----------
+    // returns:
+    // -2 = reset
+    // -1 = toggle showOnlySelected
+    //  >=0 = select route index
+    //  else = none
+    private int pickHudAction(int screenX, int screenY) {
+        Vector3 v = new Vector3(screenX, screenY, 0);
+        uiViewport.unproject(v);
 
-        shapeRenderer.setProjectionMatrix(uiCamera.combined);
-        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
-        shapeRenderer.setColor(0f, 0f, 0f, 0.65f);
+        float worldH = uiViewport.getWorldHeight();
 
-        float pad = 10f;
-        float boxW = 380f;
-        float boxH = 210f;
+        float hudLeft = HUD_PAD;
+        float hudRight = HUD_PAD + HUD_BOX_W;
+        float hudTop = worldH - HUD_PAD;
+        float hudBottom = hudTop - HUD_BOX_H;
 
-        shapeRenderer.rect(
-            pad,
-            uiViewport.getWorldHeight() - boxH - pad,
-            boxW,
-            boxH
-        );
-        shapeRenderer.end();
+        if (v.x < hudLeft || v.x > hudRight || v.y < hudBottom || v.y > hudTop) {
+            return Integer.MIN_VALUE;
+        }
 
-        batch.setProjectionMatrix(uiCamera.combined);
-        batch.begin();
+        float y = worldH - 14f;
+        float toggleTop = y;
+        float toggleBottom = y - HUD_LINE_H;
+        float extra = 4f;
+        if (v.y <= (toggleTop + extra) && v.y >= (toggleBottom - extra)) return -1;
+        y -= HUD_LINE_H;
 
-        float x = 18f;
-        float y = uiViewport.getWorldHeight() - 18f;
+        float resetTop = y;
+        float resetBottom = y - HUD_LINE_H;
+        if (v.y <= (resetTop + extra) && v.y >= (resetBottom - extra)) return -2;
+        y -= HUD_LINE_H;
 
-        font.setColor(1f, 1f, 1f, 0.95f);
-
-        font.draw(batch, "SmartCityTransit", x, y);
-        y -= 20f;
-
-        font.draw(batch, "Lines:", x, y);
-        y -= 16f;
+        y -= (HUD_SECTION_GAP * 0.5f);
+        y -= HUD_SECTION_GAP;
+        y -= (HUD_LINE_H + 2f);
 
         for (int i = 0; i < routes.size; i++) {
-            BusRoute r = routes.get(i);
-
-            boolean sel = (r == selectedRoute);
-            String marker = sel ? "> " : "  ";
-
-            font.draw(batch,
-                marker + r.id + " - " + r.name + (sel ? "  [SELECTED]" : ""),
-                x, y
-            );
-            y -= 16f;
+            float rowTop = y;
+            float rowBottom = y - HUD_LINE_H;
+            if (v.y <= (rowTop + extra) && v.y >= (rowBottom - extra)) return i;
+            y -= HUD_LINE_H;
         }
 
-        y -= 6f;
-
-        if (selectedBus != null) {
-            BusRoute r = selectedBus.getRoute();
-
-            RouteStopIndex idx = routeStopIndex.get(r);
-            Stop next = (idx != null) ? idx.getNextStop(selectedBus.getDistanceOnRoute()) : null;
-
-            float etaSec = -1f;
-            if (idx != null) {
-                float nextDist = idx.getNextStopDistance(selectedBus.getDistanceOnRoute());
-                float busDist = selectedBus.getDistanceOnRoute();
-                float remain = nextDist - busDist;
-
-                float total = r.getTotalLength();
-                if (remain < 0f && total > 0f) remain += total;
-
-                float spd = selectedBus.getSpeedPx();
-                if (spd > 0.001f) etaSec = remain / spd;
-            }
-
-            font.setColor(1f, 1f, 1f, 0.95f);
-            font.draw(batch, "Selected BUS", x, y);
-            y -= 16f;
-
-            font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
-            font.draw(batch, "Line: " + r.id + " - " + r.name, x, y);
-            y -= 16f;
-
-            font.draw(batch, "Speed: " + format1(selectedBus.getSpeedPx()) + " px/s", x, y);
-            y -= 16f;
-
-            font.draw(batch, "Next stop: " + (next != null ? next.name : "-"), x, y);
-            y -= 16f;
-
-            if (etaSec >= 0f) {
-                font.draw(batch, "ETA: " + format1(etaSec) + " s", x, y);
-                y -= 16f;
-            }
-
-            if (selectedBus.isWaiting()) {
-                font.draw(batch, "Status: STOPPED (" + format1(selectedBus.getWaitTimer()) + "s)", x, y);
-                y -= 16f;
-            }
-
-            y -= 6f;
-        }
-
-        if (selectedStop != null) {
-            font.setColor(1f, 1f, 1f, 0.95f);
-            font.draw(batch, "Selected STOP", x, y);
-            y -= 16f;
-
-            font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
-            font.draw(batch, "Name: " + selectedStop.name, x, y);
-            y -= 16f;
-
-            font.draw(batch,
-                "Lat: " + format5(selectedStop.point.lat) + "  Lon: " + format5(selectedStop.point.lon),
-                x, y
-            );
-            y -= 16f;
-        }
-
-        batch.end();
-        viewport.apply();
+        return Integer.MIN_VALUE;
     }
+
+    private boolean isPointInsideHud(int screenX, int screenY) {
+        Vector3 v = new Vector3(screenX, screenY, 0);
+        uiViewport.unproject(v);
+
+        float hudLeft = HUD_PAD;
+        float hudRight = HUD_PAD + HUD_BOX_W;
+        float hudTop = uiViewport.getWorldHeight() - HUD_PAD;
+        float hudBottom = hudTop - HUD_BOX_H;
+
+        return v.x >= hudLeft && v.x <= hudRight && v.y >= hudBottom && v.y <= hudTop;
+    }
+
+    // --- PICK / UTILS ----
 
     private Bus pickBus(float worldX, float worldY) {
         Bus best = null;
@@ -669,7 +820,9 @@ public class SmartCityTransit extends ApplicationAdapter {
         return (bestDist2 <= tol2) ? best : null;
     }
 
-    private float pointToSegmentDist2(float px, float py, float ax, float ay, float bx, float by) {
+    private float pointToSegmentDist2(float px, float py,
+                                      float ax, float ay,
+                                      float bx, float by) {
         float abx = bx - ax;
         float aby = by - ay;
         float apx = px - ax;

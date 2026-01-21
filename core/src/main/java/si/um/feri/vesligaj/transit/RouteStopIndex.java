@@ -93,4 +93,11 @@ public class RouteStopIndex {
         if (t > 1f) t = 1f;
         return t;
     }
+    public float getNextStopDistance(float busDist) {
+        for (int i = 0; i < ordered.size(); i++) {
+            StopOnRoute sr = ordered.get(i);
+            if (sr.distance >= busDist) return sr.distance;
+        }
+        return ordered.isEmpty() ? 0f : ordered.get(ordered.size() - 1).distance;
+    }
 }

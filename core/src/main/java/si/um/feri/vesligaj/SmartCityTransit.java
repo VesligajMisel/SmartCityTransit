@@ -66,6 +66,7 @@ public class SmartCityTransit extends ApplicationAdapter {
     private BusRoute selectedRoute = null;
     private static final float ROUTE_PICK_TOLERANCE = 14f;
     private Vector2 cameraTarget = null;
+    private float uiTime = 0f;
 
 
     @Override
@@ -415,6 +416,32 @@ public class SmartCityTransit extends ApplicationAdapter {
             shapeRenderer.end();
         }
 
+        // --- NEXT STOP HIGHLIGHT (pulsing ring) ---
+        if (selectedBus != null) {
+            BusRoute r = selectedBus.getRoute();
+            RouteStopIndex idx = routeStopIndex.get(r);
+            if (idx != null) {
+                Stop next = idx.getNextStop(selectedBus.getDistanceOnRoute());
+                if (next != null) {
+                    float sx = (float) GeoUtils.lonToWorldX(next.point.lon, MAP_ZOOM);
+                    float sy = (float) GeoUtils.latToWorldY(next.point.lat, MAP_ZOOM);
+
+                    float pulse = 0.5f + 0.5f * (float)Math.sin(uiTime * 4.0f);
+                    float radius = (STOP_RADIUS + 10f + pulse * 6f) * camera.zoom;
+
+                    shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
+                    shapeRenderer.setColor(1f, 1f, 0.2f, 0.85f);
+                    shapeRenderer.circle(sx, sy, radius, 30);
+
+                    // inner ring
+                    shapeRenderer.setColor(1f, 1f, 1f, 0.55f);
+                    shapeRenderer.circle(sx, sy, (STOP_RADIUS + 6f) * camera.zoom, 24);
+                    shapeRenderer.end();
+                }
+            }
+        }
+
+
         // --- LABELS (world-space, only when zoomed-in enough) ---
         if (camera.zoom <= 1.2f) {
             batch.setProjectionMatrix(camera.combined);
@@ -441,14 +468,14 @@ public class SmartCityTransit extends ApplicationAdapter {
         uiViewport.apply();
         uiCamera.update();
 
+        // HUD background
         shapeRenderer.setProjectionMatrix(uiCamera.combined);
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(0f, 0f, 0f, 0.65f);
 
-        // HUD background box
         float pad = 10f;
-        float boxW = 360f;
-        float boxH = 150f;
+        float boxW = 380f;
+        float boxH = 210f; // malo višje, ker dodamo ETA
 
         shapeRenderer.rect(
             pad,
@@ -456,18 +483,21 @@ public class SmartCityTransit extends ApplicationAdapter {
             boxW,
             boxH
         );
-
         shapeRenderer.end();
-
 
         batch.setProjectionMatrix(uiCamera.combined);
         batch.begin();
 
-        float x = 16f;
-        float y = uiViewport.getWorldHeight() - 16f;
+        float x = 18f;
+        float y = uiViewport.getWorldHeight() - 18f;
+
+        font.setColor(1f, 1f, 1f, 0.95f);
 
         // Title
-        font.setColor(1f, 1f, 1f, 0.92f);
+        font.draw(batch, "SmartCityTransit", x, y);
+        y -= 20f;
+
+        // Lines legend
         font.draw(batch, "Lines:", x, y);
         y -= 16f;
 
@@ -483,41 +513,68 @@ public class SmartCityTransit extends ApplicationAdapter {
             );
             y -= 16f;
         }
+
         y -= 6f;
 
-        // Selected bus info
+        // Selected BUS info
         if (selectedBus != null) {
             BusRoute r = selectedBus.getRoute();
-            Stop next = null;
 
             RouteStopIndex idx = routeStopIndex.get(r);
+            Stop next = (idx != null) ? idx.getNextStop(selectedBus.getDistanceOnRoute()) : null;
+
+            // ETA calculation
+            float etaSec = -1f;
             if (idx != null) {
-                next = idx.getNextStop(selectedBus.getDistanceOnRoute());
+                float nextDist = idx.getNextStopDistance(selectedBus.getDistanceOnRoute());
+                float busDist = selectedBus.getDistanceOnRoute();
+                float remain = nextDist - busDist;
+
+                // loop handling
+                float total = r.getTotalLength();
+                if (remain < 0f && total > 0f) remain += total;
+
+                float spd = selectedBus.getSpeedPx();
+                if (spd > 0.001f) etaSec = remain / spd;
             }
 
-            font.setColor(1f, 1f, 1f, 0.92f);
-            font.draw(batch, "Selected BUS", x, y); y -= 16f;
+            font.setColor(1f, 1f, 1f, 0.95f);
+            font.draw(batch, "Selected BUS", x, y);
+            y -= 16f;
 
-            font.setColor(0.9f, 0.9f, 0.9f, 0.90f);
-            font.draw(batch, "Line: " + r.id + " - " + r.name, x, y); y -= 16f;
+            font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
+            font.draw(batch, "Line: " + r.id + " - " + r.name, x, y);
+            y -= 16f;
 
-            font.draw(batch, "Speed: " + format1(selectedBus.getSpeedPx()) + " px/s", x, y); y -= 16f;
+            font.draw(batch, "Speed: " + format1(selectedBus.getSpeedPx()) + " px/s", x, y);
+            y -= 16f;
 
-            if (next != null) {
-                font.draw(batch, "Next stop: " + next.name, x, y); y -= 16f;
-            } else {
-                font.draw(batch, "Next stop: -", x, y); y -= 16f;
+            font.draw(batch, "Next stop: " + (next != null ? next.name : "-"), x, y);
+            y -= 16f;
+
+            if (etaSec >= 0f) {
+                font.draw(batch, "ETA: " + format1(etaSec) + " s", x, y);
+                y -= 16f;
             }
+
+            y -= 6f;
         }
 
-        // Selected stop info
+        // Selected STOP info
         if (selectedStop != null) {
-            font.setColor(1f, 1f, 1f, 0.92f);
-            font.draw(batch, "Selected STOP", x, y); y -= 16f;
+            font.setColor(1f, 1f, 1f, 0.95f);
+            font.draw(batch, "Selected STOP", x, y);
+            y -= 16f;
 
-            font.setColor(0.9f, 0.9f, 0.9f, 0.90f);
-            font.draw(batch, "Name: " + selectedStop.name, x, y); y -= 16f;
-            font.draw(batch, "Lat: " + format5(selectedStop.point.lat) + "  Lon: " + format5(selectedStop.point.lon), x, y); y -= 16f;
+            font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
+            font.draw(batch, "Name: " + selectedStop.name, x, y);
+            y -= 16f;
+
+            font.draw(batch,
+                "Lat: " + format5(selectedStop.point.lat) + "  Lon: " + format5(selectedStop.point.lon),
+                x, y
+            );
+            y -= 16f;
         }
 
         batch.end();
@@ -525,6 +582,7 @@ public class SmartCityTransit extends ApplicationAdapter {
         // restore world viewport for next frame
         viewport.apply();
     }
+
 
     private Bus pickBus(float worldX, float worldY) {
         Bus best = null;

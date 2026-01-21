@@ -26,10 +26,6 @@ public class BusRoute {
         this.stops = (stops == null) ? new Array<>() : stops;
     }
 
-    /**
-     * Pokliči po tem, ko veš zoom, da se pripravi world polilinija za rendering/animacijo.
-     * Če menjaš zoom level za tile rendering, lahko rebuild-aš tudi route (ni drago).
-     */
     public void rebuildWorld(int zoom) {
         worldPoints.clear();
         totalLength = 0f;
@@ -67,9 +63,6 @@ public class BusRoute {
         return totalLength;
     }
 
-    /**
-     * Pozicija na poliliniji pri razdalji d (world units).
-     */
     public Vector2 getPositionAtDistance(float distance, Vector2 out) {
         if (out == null) out = new Vector2();
         if (worldPoints.size == 0) return out.set(0, 0);
@@ -77,7 +70,6 @@ public class BusRoute {
 
         float d = distance;
 
-        // wrap distance (za loop animacijo)
         if (totalLength > 0f) {
             d = d % totalLength;
             if (d < 0f) d += totalLength;

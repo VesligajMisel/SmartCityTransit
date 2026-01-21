@@ -124,7 +124,6 @@ public class TileManager {
     }
 
     public int getTileSize() {
-        // keep stable API; can later return GeoUtils.getTileSize() if you want one source of truth
         return TILE_SIZE;
     }
 
@@ -133,7 +132,6 @@ public class TileManager {
     }
 
     private void touch(String key) {
-        // move key to the end (most-recent)
         for (int i = accessOrder.size - 1; i >= 0; i--) {
             if (accessOrder.get(i).equals(key)) {
                 accessOrder.removeIndex(i);
@@ -144,7 +142,6 @@ public class TileManager {
     }
 
     private void evictIfNeeded() {
-        // Evict oldest until under limit
         while (cache.size > MAX_TILES && accessOrder.size > 0) {
             String oldest = accessOrder.removeIndex(0);
             Texture t = cache.remove(oldest);

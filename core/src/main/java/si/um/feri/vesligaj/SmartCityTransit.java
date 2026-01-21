@@ -39,8 +39,6 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     private OrthographicCamera camera;
     private Viewport viewport;
-
-    // UI camera (screen-space HUD)
     private OrthographicCamera uiCamera;
     private Viewport uiViewport;
 
@@ -65,9 +63,9 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     private BusRoute selectedRoute = null;
     private static final float ROUTE_PICK_TOLERANCE = 14f;
+
     private Vector2 cameraTarget = null;
     private float uiTime = 0f;
-
 
     @Override
     public void create() {
@@ -118,8 +116,11 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             float baseSpeed = 35f + i * 8f;
 
-            buses.add(new Bus(r, baseSpeed, total * 0.12f));
-            buses.add(new Bus(r, baseSpeed * 0.92f, total * 0.58f));
+            Bus b1 = new Bus(r, baseSpeed, total * 0.12f);
+            Bus b2 = new Bus(r, baseSpeed * 0.92f, total * 0.58f);
+
+            buses.add(b1);
+            buses.add(b2);
         }
 
         font = new BitmapFont();
@@ -143,35 +144,39 @@ public class SmartCityTransit extends ApplicationAdapter {
             public boolean touchUp(int screenX, int screenY, int pointer, int button) {
                 dragging = false;
 
-                // treat as click if mouse didn't move much
                 int dx = screenX - downScreenX;
                 int dy = screenY - downScreenY;
                 if (dx * dx + dy * dy <= 6 * 6) {
                     Vector3 v = new Vector3(screenX, screenY, 0);
                     viewport.unproject(v);
 
-                    // 1) try pick bus first
+                    //try pick bus first
                     Bus b = pickBus(v.x, v.y);
                     if (b != null) {
                         selectedBus = b;
                         selectedStop = null;
+
+                        selectedRoute = b.getRoute();
+                        cameraTarget = computeRouteCenter(selectedRoute);
                         return true;
                     }
 
-                    // 2) then pick stop
+                    //then pick stop
                     selectedStop = pickStop(v.x, v.y);
                     if (selectedStop != null) {
                         selectedBus = null;
+                        return true;
                     }
 
-                    // 3) then pick route
+                    //hen pick route
                     BusRoute r = pickRoute(v.x, v.y);
                     if (r != null) {
                         selectedRoute = r;
                         selectedBus = null;
                         selectedStop = null;
+
+                        cameraTarget = computeRouteCenter(r);
                     }
-                    cameraTarget = computeRouteCenter(r);
                 }
 
                 return true;
@@ -204,6 +209,10 @@ public class SmartCityTransit extends ApplicationAdapter {
 
     @Override
     public void render() {
+        float dt = Gdx.graphics.getDeltaTime();
+
+        uiTime += dt;
+
         if (cameraTarget != null) {
             float lerp = 0.05f;
             camera.position.x += (cameraTarget.x - camera.position.x) * lerp;
@@ -211,9 +220,16 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
         camera.update();
 
-        float dt = Gdx.graphics.getDeltaTime();
+        // update buses
         for (int i = 0; i < buses.size; i++) {
             buses.get(i).update(dt);
+        }
+
+        //stop checks after movement
+        for (int i = 0; i < buses.size; i++) {
+            Bus b = buses.get(i);
+            RouteStopIndex idx = routeStopIndex.get(b.getRoute());
+            b.checkStop(idx);
         }
 
         Gdx.gl.glClearColor(0.08f, 0.08f, 0.10f, 1f);
@@ -222,7 +238,6 @@ public class SmartCityTransit extends ApplicationAdapter {
         viewport.apply();
         batch.setProjectionMatrix(camera.combined);
 
-        // visible bounds in world pixels
         float halfW = viewport.getWorldWidth() * 0.5f * camera.zoom;
         float halfH = viewport.getWorldHeight() * 0.5f * camera.zoom;
 
@@ -254,13 +269,13 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
         batch.end();
 
-        // ---- ROUTES (shadow + colored) ----
+        // ---- ROUTES ----
         drawRoutes();
 
         // ---- BUSES + STOPS + SELECTION + LABELS ----
         drawStopsAndBuses();
 
-        // ---- HUD (screen-space) ----
+        // ---- HUD ----
         drawHud();
     }
 
@@ -276,20 +291,17 @@ public class SmartCityTransit extends ApplicationAdapter {
         return c;
     }
 
-
     private void drawRoutes() {
         shapeRenderer.setProjectionMatrix(camera.combined);
 
-        float base = 3.0f * camera.zoom;        // normal route thickness
-        float shadow = 7.0f * camera.zoom;      // shadow thickness
+        float base = 3.0f * camera.zoom;
+        float shadow = 7.0f * camera.zoom;
         float fadedMult = 0.65f;
 
-        // -------- SHADOW (filled thick line) --------
+        // SHADOW
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
-
         for (int r = 0; r < routes.size; r++) {
             BusRoute route = routes.get(r);
-
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float shadowAlpha = isSelected ? 0.40f : 0.08f;
 
@@ -297,19 +309,16 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = shadow * (isSelected ? 1.0f : fadedMult);
-
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // -------- MAIN COLORED (filled thick line) --------
+        // MAIN
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
-
         for (int r = 0; r < routes.size; r++) {
             BusRoute route = routes.get(r);
-
             boolean isSelected = (selectedRoute == null) || (route == selectedRoute);
             float alpha = isSelected ? 0.95f : 0.12f;
 
@@ -317,19 +326,17 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             Array<Vector2> pts = route.getWorldPoints();
             float thick = base * (isSelected ? 1.0f : fadedMult);
-
             for (int i = 0; i < pts.size - 1; i++) {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), thick);
             }
         }
         shapeRenderer.end();
 
-        // -------- EXTRA HIGHLIGHT for selectedRoute (super obvious) --------
+        // EXTRA highlight
         if (selectedRoute != null) {
             int selIndex = routes.indexOf(selectedRoute, true);
             Array<Vector2> pts = selectedRoute.getWorldPoints();
 
-            // white outline band
             shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
             shapeRenderer.setColor(1f, 1f, 1f, 0.35f);
             float outlineThick = 11.0f * camera.zoom;
@@ -337,7 +344,6 @@ public class SmartCityTransit extends ApplicationAdapter {
                 shapeRenderer.rectLine(pts.get(i), pts.get(i + 1), outlineThick);
             }
 
-            // colored band on top
             setRouteColor(shapeRenderer, selIndex, 1.0f);
             float selectedThick = 5.0f * camera.zoom;
             for (int i = 0; i < pts.size - 1; i++) {
@@ -352,25 +358,22 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         float stopR = STOP_RADIUS * camera.zoom;
 
-        // --- FILLED (stops + buses) ---
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
 
-        // stops: halo + fill
+        // stops
         for (int i = 0; i < stops.size; i++) {
             Stop s = stops.get(i);
             float x = (float) GeoUtils.lonToWorldX(s.point.lon, MAP_ZOOM);
             float y = (float) GeoUtils.latToWorldY(s.point.lat, MAP_ZOOM);
 
-            // halo
             shapeRenderer.setColor(0f, 0f, 0f, 0.30f);
             shapeRenderer.circle(x, y, stopR + (2.5f * camera.zoom), 18);
 
-            // fill
             shapeRenderer.setColor(1f, 0.20f, 0.20f, 0.95f);
             shapeRenderer.circle(x, y, stopR, 18);
         }
 
-        // buses: halo then body colored by route
+        // buses
         for (int i = 0; i < buses.size; i++) {
             Bus b = buses.get(i);
             Vector2 p = b.getPosition();
@@ -385,19 +388,23 @@ public class SmartCityTransit extends ApplicationAdapter {
             shapeRenderer.setColor(0f, 0f, 0f, haloAlpha);
             shapeRenderer.circle(p.x, p.y, 9.0f * camera.zoom, 20);
 
-            // body
+            // body (ADDED: if waiting, tint to yellow so you SEE stop)
             int routeIndex = routes.indexOf(b.getRoute(), true);
-            setRouteColor(shapeRenderer, routeIndex, busAlpha);
+            if (b.isWaiting()) {
+                shapeRenderer.setColor(1f, 0.85f, 0.25f, busAlpha);
+            } else {
+                setRouteColor(shapeRenderer, routeIndex, busAlpha);
+            }
             shapeRenderer.circle(p.x, p.y, 6.5f * camera.zoom, 20);
 
-            // small white dot
+            // small dot
             shapeRenderer.setColor(1f, 1f, 1f, busAlpha);
             shapeRenderer.circle(p.x, p.y, 2.0f * camera.zoom, 12);
         }
 
         shapeRenderer.end();
 
-        // --- SELECTION (outline) ---
+        // selection rings
         if (selectedStop != null) {
             float sx = (float) GeoUtils.lonToWorldX(selectedStop.point.lon, MAP_ZOOM);
             float sy = (float) GeoUtils.latToWorldY(selectedStop.point.lat, MAP_ZOOM);
@@ -416,7 +423,7 @@ public class SmartCityTransit extends ApplicationAdapter {
             shapeRenderer.end();
         }
 
-        // --- NEXT STOP HIGHLIGHT (pulsing ring) ---
+        // next stop highlight
         if (selectedBus != null) {
             BusRoute r = selectedBus.getRoute();
             RouteStopIndex idx = routeStopIndex.get(r);
@@ -426,14 +433,13 @@ public class SmartCityTransit extends ApplicationAdapter {
                     float sx = (float) GeoUtils.lonToWorldX(next.point.lon, MAP_ZOOM);
                     float sy = (float) GeoUtils.latToWorldY(next.point.lat, MAP_ZOOM);
 
-                    float pulse = 0.5f + 0.5f * (float)Math.sin(uiTime * 4.0f);
+                    float pulse = 0.5f + 0.5f * (float) Math.sin(uiTime * 4.0f);
                     float radius = (STOP_RADIUS + 10f + pulse * 6f) * camera.zoom;
 
                     shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
                     shapeRenderer.setColor(1f, 1f, 0.2f, 0.85f);
                     shapeRenderer.circle(sx, sy, radius, 30);
 
-                    // inner ring
                     shapeRenderer.setColor(1f, 1f, 1f, 0.55f);
                     shapeRenderer.circle(sx, sy, (STOP_RADIUS + 6f) * camera.zoom, 24);
                     shapeRenderer.end();
@@ -441,8 +447,7 @@ public class SmartCityTransit extends ApplicationAdapter {
             }
         }
 
-
-        // --- LABELS (world-space, only when zoomed-in enough) ---
+        // labels
         if (camera.zoom <= 1.2f) {
             batch.setProjectionMatrix(camera.combined);
             batch.begin();
@@ -468,14 +473,13 @@ public class SmartCityTransit extends ApplicationAdapter {
         uiViewport.apply();
         uiCamera.update();
 
-        // HUD background
         shapeRenderer.setProjectionMatrix(uiCamera.combined);
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(0f, 0f, 0f, 0.65f);
 
         float pad = 10f;
         float boxW = 380f;
-        float boxH = 210f; // malo višje, ker dodamo ETA
+        float boxH = 210f;
 
         shapeRenderer.rect(
             pad,
@@ -493,11 +497,9 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         font.setColor(1f, 1f, 1f, 0.95f);
 
-        // Title
         font.draw(batch, "SmartCityTransit", x, y);
         y -= 20f;
 
-        // Lines legend
         font.draw(batch, "Lines:", x, y);
         y -= 16f;
 
@@ -516,21 +518,18 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         y -= 6f;
 
-        // Selected BUS info
         if (selectedBus != null) {
             BusRoute r = selectedBus.getRoute();
 
             RouteStopIndex idx = routeStopIndex.get(r);
             Stop next = (idx != null) ? idx.getNextStop(selectedBus.getDistanceOnRoute()) : null;
 
-            // ETA calculation
             float etaSec = -1f;
             if (idx != null) {
                 float nextDist = idx.getNextStopDistance(selectedBus.getDistanceOnRoute());
                 float busDist = selectedBus.getDistanceOnRoute();
                 float remain = nextDist - busDist;
 
-                // loop handling
                 float total = r.getTotalLength();
                 if (remain < 0f && total > 0f) remain += total;
 
@@ -557,10 +556,14 @@ public class SmartCityTransit extends ApplicationAdapter {
                 y -= 16f;
             }
 
+            if (selectedBus.isWaiting()) {
+                font.draw(batch, "Status: STOPPED (" + format1(selectedBus.getWaitTimer()) + "s)", x, y);
+                y -= 16f;
+            }
+
             y -= 6f;
         }
 
-        // Selected STOP info
         if (selectedStop != null) {
             font.setColor(1f, 1f, 1f, 0.95f);
             font.draw(batch, "Selected STOP", x, y);
@@ -578,11 +581,8 @@ public class SmartCityTransit extends ApplicationAdapter {
         }
 
         batch.end();
-
-        // restore world viewport for next frame
         viewport.apply();
     }
-
 
     private Bus pickBus(float worldX, float worldY) {
         Bus best = null;
@@ -635,21 +635,11 @@ public class SmartCityTransit extends ApplicationAdapter {
     private void setRouteColor(ShapeRenderer sr, int routeIndex, float alpha) {
         int idx = (routeIndex % 5 + 5) % 5;
         switch (idx) {
-            case 0:
-                sr.setColor(0.15f, 0.60f, 0.95f, alpha); // blue
-                break;
-            case 1:
-                sr.setColor(0.20f, 0.80f, 0.55f, alpha); // green
-                break;
-            case 2:
-                sr.setColor(0.95f, 0.55f, 0.20f, alpha); // orange
-                break;
-            case 3:
-                sr.setColor(0.70f, 0.35f, 0.95f, alpha); // purple
-                break;
-            default:
-                sr.setColor(0.95f, 0.25f, 0.45f, alpha); // pink-red
-                break;
+            case 0: sr.setColor(0.15f, 0.60f, 0.95f, alpha); break;
+            case 1: sr.setColor(0.20f, 0.80f, 0.55f, alpha); break;
+            case 2: sr.setColor(0.95f, 0.55f, 0.20f, alpha); break;
+            case 3: sr.setColor(0.70f, 0.35f, 0.95f, alpha); break;
+            default: sr.setColor(0.95f, 0.25f, 0.45f, alpha); break;
         }
     }
 
@@ -679,9 +669,7 @@ public class SmartCityTransit extends ApplicationAdapter {
         return (bestDist2 <= tol2) ? best : null;
     }
 
-    private float pointToSegmentDist2(float px, float py,
-                                      float ax, float ay,
-                                      float bx, float by) {
+    private float pointToSegmentDist2(float px, float py, float ax, float ay, float bx, float by) {
         float abx = bx - ax;
         float aby = by - ay;
         float apx = px - ax;
@@ -705,7 +693,6 @@ public class SmartCityTransit extends ApplicationAdapter {
         float dy = py - cy;
         return dx * dx + dy * dy;
     }
-
 
     private String format1(float v) {
         return String.format(java.util.Locale.US, "%.1f", v);

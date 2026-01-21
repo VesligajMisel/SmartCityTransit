@@ -52,7 +52,6 @@ public class GeoUtils {
         return n - yTopLeft; // flip to Y-up
     }
 
-    // convenience (same as worldPixelX/Y)
     public static double lonToWorldX(double lon, int zoom) {
         return lonToWorldPixelX(lon, zoom);
     }
@@ -60,10 +59,6 @@ public class GeoUtils {
     public static double latToWorldY(double lat, int zoom) {
         return latToWorldPixelY(lat, zoom);
     }
-
-    // ---------------------------
-    // ADDITIONS (for picking, UI, cleaner tile math)
-    // ---------------------------
 
     /** world pixels (Y-up) -> longitude */
     public static double worldXToLon(double worldX, int zoom) {
@@ -75,10 +70,9 @@ public class GeoUtils {
     public static double worldYToLat(double worldY, int zoom) {
         double n = (double) (1 << zoom) * TILE_SIZE;
 
-        // back to OSM's top-left Y
         double yTopLeft = n - worldY;
 
-        // inverse Web Mercator
+        // inverse
         double mercN = Math.PI * (1.0 - 2.0 * yTopLeft / n);
         double latRad = Math.atan(Math.sinh(mercN));
         return Math.toDegrees(latRad);

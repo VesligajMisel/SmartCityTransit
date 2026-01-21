@@ -24,7 +24,6 @@ public class SampleStops {
         return s;
     }
 
-    /** Helper: poišči stop po imenu (da SampleRoutes ostane čist) */
     public static Stop findByName(Array<Stop> stops, String name) {
         for (Stop st : stops) {
             if (st.name.equals(name)) return st;

@@ -22,10 +22,6 @@ public class RouteStopIndex {
 
     private final List<StopOnRoute> ordered = new ArrayList<StopOnRoute>();
 
-    /**
-     * Ustvari indeks postaj po razdalji na route poliliniji (world px).
-     * Predpogoj: route.rebuildWorld(zoom) mora biti že poklican.
-     */
     public RouteStopIndex(BusRoute route, Array<Stop> stops, int zoom) {
         Array<Vector2> pts = route.getWorldPoints();
         int n = (pts == null) ? 0 : pts.size;

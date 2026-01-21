@@ -1,28 +1,32 @@
 package si.um.feri.vesligaj.transit;
 
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Vector2;
 
 public class Bus {
 
     private final BusRoute route;
 
-    // hitrost v world px/s (world pixels per second)
     private float speedPx;
 
-    // razdalja po poti (world px)
     private float distance;
 
     private boolean loop = true;
 
-    // cache da ne alociramo vsaki frame
     private final Vector2 position = new Vector2();
 
-    /**
-     * @param route BusRoute (mora imeti rebuildWorld(zoom) že izveden)
-     * @param speedPx hitrost v world px/s
-     * @param startDistance začetni zamik po poti (world px) -> za več avtobusov na isti liniji
-     */
+    private boolean waiting = false;
+    private float waitTimer = 0f;
+
+    // tuning
+    private float stopTimeSec = 1.6f;
+    private float stopRadiusPx = 10f;
+    private float lastStopDistance = -999999f;
+
+    private float stopTimeMinSec = 1.0f;
+    private float stopTimeMaxSec = 2.4f;
+
     public Bus(BusRoute route, float speedPx, float startDistance) {
         this.route = route;
         this.speedPx = Math.max(1f, speedPx);
@@ -53,9 +57,66 @@ public class Bus {
         return distance;
     }
 
+    public boolean isWaiting() {
+        return waiting;
+    }
+
+    public float getWaitTimer() {
+        return waitTimer;
+    }
+
+    public void setStopTimeSec(float stopTimeSec) {
+        this.stopTimeSec = Math.max(0f, stopTimeSec);
+    }
+
+    public void setStopRadiusPx(float stopRadiusPx) {
+        this.stopRadiusPx = Math.max(0f, stopRadiusPx);
+    }
+
+    public void setStopTimeRangeSec(float minSec, float maxSec) {
+        stopTimeMinSec = Math.max(0f, Math.min(minSec, maxSec));
+        stopTimeMaxSec = Math.max(stopTimeMinSec, Math.max(minSec, maxSec));
+    }
+
+    public void checkStop(RouteStopIndex idx) {
+        if (idx == null) return;
+        if (waiting) return;
+
+        float total = route.getTotalLength();
+        if (total <= 0f) return;
+
+        float nextStopDist = idx.getNextStopDistance(distance);
+
+        float diff = nextStopDist - distance;
+        if (loop) {
+            if (diff < 0f) diff += total;
+        } else {
+            if (diff < 0f) return;
+        }
+
+        if (diff <= stopRadiusPx) {
+            // prepreči, da bi isti stop sprožil večkrat
+            if (Math.abs(nextStopDist - lastStopDistance) > stopRadiusPx * 0.75f) {
+                waiting = true;
+                waitTimer = MathUtils.random(stopTimeMinSec, stopTimeMaxSec);
+                lastStopDistance = nextStopDist;
+            }
+        }
+    }
+
     public void update(float dt) {
         float total = route.getTotalLength();
         if (total <= 0f) return;
+
+        // ---- WAITING (ADDED) ----
+        if (waiting) {
+            waitTimer -= dt;
+            if (waitTimer <= 0f) {
+                waiting = false;
+                waitTimer = 0f;
+            }
+            return;
+        }
 
         distance += speedPx * dt;
 
@@ -71,10 +132,6 @@ public class Bus {
         return route.getPositionAtDistance(distance, position);
     }
 
-    /**
-     * “Lepši” render: halo + body.
-     * Barvo naj nastavi caller (po liniji), tu samo izrišemo oblike.
-     */
     public void render(ShapeRenderer sr) {
         Vector2 p = getPosition();
 

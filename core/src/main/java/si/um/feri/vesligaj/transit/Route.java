@@ -2,9 +2,6 @@ package si.um.feri.vesligaj.transit;
 
 import com.badlogic.gdx.utils.Array;
 
-/**
- * Geo pot (lat/lon točke). Brez render logike.
- */
 public class Route {
     public final String id;
     public final String name;

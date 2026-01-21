@@ -4,7 +4,6 @@ import com.badlogic.gdx.utils.Array;
 
 /**
  * Testne linije za Ljubljano (geo lat/lon).
- * BusRoute bo kasneje dobil rebuildWorld(zoom) v SmartCityTransit.
  */
 public class SampleRoutes {
 

@@ -317,10 +317,10 @@ public class HudPanel {
         shapeRenderer.rect(hudX, hudY, hudW, hudH);
         shapeRenderer.end();
 
-        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        /*shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(1f, 1f, 1f, 0.05f);
         shapeRenderer.rect(hudX, hudY + hudH - 30f, hudW, 30f);
-        shapeRenderer.end();
+        shapeRenderer.end();*/
 
         float dividerX1 = hudX + 10f;
         float dividerX2 = hudX + hudW - 10f;

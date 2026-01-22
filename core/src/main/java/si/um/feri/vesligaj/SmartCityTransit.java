@@ -2,6 +2,7 @@ package si.um.feri.vesligaj;
 
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Input;
 import com.badlogic.gdx.InputAdapter;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
@@ -82,13 +83,13 @@ public class SmartCityTransit extends ApplicationAdapter {
 
 
     // HUD layout constants
-    private static final float HUD_PAD = 10f;
-    private static final float HUD_BOX_W = 380f;
-    private static final float HUD_BOX_H = 260f;
+    private static final float HUD_PAD = 16f;
+    private static final float HUD_BOX_W = 440f;
+    private static final float HUD_BOX_H = 300f;
     private static final float HUD_TEXT_X = 18f;
-    private static final float HUD_LINE_H = 22f;
-    private static final float HUD_SECTION_GAP = 12f;
-    private static final float HUD_ITEM_GAP = 6f;
+    private static final float HUD_LINE_H = 28f;
+    private static final float HUD_SECTION_GAP = 18f;
+    private static final float HUD_ITEM_GAP = 10f;
     private HudPanel hudPanel;
     private TransitDataSource dataSource;
     private TransitDataSource demoSource;
@@ -111,6 +112,8 @@ public class SmartCityTransit extends ApplicationAdapter {
     private Stop travelFromStop = null;
     private Stop travelToStop = null;
     private Bus travelBus = null;
+    private float quitX, quitY, quitW = 24f, quitH = 24f;
+    private final float quitMargin = 12f;
 
 
     private boolean isHidden(Stop s) {
@@ -236,6 +239,14 @@ public class SmartCityTransit extends ApplicationAdapter {
             @Override
             public boolean touchUp(int screenX, int screenY, int pointer, int button) {
                 dragging = false;
+                Vector3 u = new Vector3(screenX, screenY, 0);
+                uiViewport.unproject(u);
+
+                if (u.x >= quitX && u.x <= quitX + quitW &&
+                    u.y >= quitY - quitH && u.y <= quitY) {
+                    Gdx.app.exit();
+                    return true;
+                }
 
                 int dx = screenX - downScreenX;
                 int dy = screenY - downScreenY;
@@ -610,7 +621,14 @@ public class SmartCityTransit extends ApplicationAdapter {
                 return false;
             }
 
-
+            @Override
+            public boolean keyDown(int keycode) {
+                if (keycode == Input.Keys.ESCAPE) {
+                    Gdx.app.exit();
+                    return true;
+                }
+                return false;
+            }
 
             @Override
             public boolean touchDragged(int screenX, int screenY, int pointer) {
@@ -838,6 +856,13 @@ public class SmartCityTransit extends ApplicationAdapter {
         if (choosingTravelDestination && travelFromStop != null) {
             font.draw(batch, "TRAVEL: Click destination stop (from = " + travelFromStop.name + ")", 420f, uiViewport.getWorldHeight() - 44f);
         }
+
+        quitX = uiViewport.getWorldWidth() - quitMargin - quitW;
+        quitY = uiViewport.getWorldHeight() - quitMargin;
+
+        font.setColor(0f, 0f, 0f, 1f);
+        font.draw(batch, "[X]", quitX + 6f, quitY - 4f);
+        font.setColor(1f, 1f, 1f, 1f);
 
         batch.end();
     }

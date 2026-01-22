@@ -8,20 +8,24 @@ import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.ObjectMap;
+import com.badlogic.gdx.utils.ObjectSet;
 import com.badlogic.gdx.utils.viewport.FitViewport;
 import com.badlogic.gdx.utils.viewport.Viewport;
 
 import si.um.feri.vesligaj.data.SampleDataSource;
 import si.um.feri.vesligaj.data.TransitDataSource;
 import si.um.feri.vesligaj.data.GtfsDataSource;
+import si.um.feri.vesligaj.edit.TransitEditor;
 import si.um.feri.vesligaj.map.GeoUtils;
 import si.um.feri.vesligaj.map.TileManager;
 import si.um.feri.vesligaj.transit.Bus;
 import si.um.feri.vesligaj.transit.BusRoute;
+import si.um.feri.vesligaj.transit.Route;
 import si.um.feri.vesligaj.transit.RouteStopIndex;
 import si.um.feri.vesligaj.transit.SampleRoutes;
 import si.um.feri.vesligaj.transit.SampleStops;
@@ -91,6 +95,48 @@ public class SmartCityTransit extends ApplicationAdapter {
     private TransitDataSource gtfsSource;
     private boolean useGtfs = false;
 
+    private boolean editMode = false;
+    private TransitEditor editor;
+    private ObjectSet<String> hiddenStopIds = new ObjectSet<>();
+    private String editStopName = "Nova postaja";
+    private Vector2 pendingStopWorld = null;
+
+    private Stop busStartStop = null;
+    private Stop busEndStop = null;
+    private boolean addingBus = false;
+    private boolean typingStopName = false;
+    private boolean pendingAddStop = false;
+    private String pendingStopName = "Nova postaja";
+    private boolean choosingTravelDestination = false;
+    private Stop travelFromStop = null;
+    private Stop travelToStop = null;
+    private Bus travelBus = null;
+
+
+    private boolean isHidden(Stop s) {
+        return s != null && s.id != null && hiddenStopIds.contains(s.id);
+    }
+
+    private void hideStop(Stop s) {
+        if (s != null && s.id != null) hiddenStopIds.add(s.id);
+    }
+
+    private BusRoute findRouteContainingStops(Stop a, Stop b) {
+        if (a == null || b == null) return null;
+        for (BusRoute r : routes) {
+            if (r == null || r.stops == null) continue;
+            boolean hasA = false, hasB = false;
+            for (Stop s : r.stops) {
+                if (s == a) hasA = true;
+                if (s == b) hasB = true;
+                if (hasA && hasB) return r;
+            }
+        }
+        return null;
+    }
+
+
+
 
     @Override
     public void create() {
@@ -155,12 +201,27 @@ public class SmartCityTransit extends ApplicationAdapter {
             buses.add(new Bus(r, baseSpeed * 0.92f, total * 0.58f));
         }
 
+        BusRoute r = findRouteContainingBoth(busStartStop, busEndStop);
+        if (r != null) {
+            RouteStopIndex idx = routeStopIndex.get(r);
+            if (idx != null) {
+                float startD = idx.getDistanceForStop(busStartStop);
+                float endD = idx.getDistanceForStop(busEndStop);
+                if (endD >= 0 && startD >= 0) {
+                    Bus nb = new Bus(r, 40f, startD);
+                    nb.setTargetDistance(endD);
+                    buses.add(nb);
+                }
+            }
+        }
+
         font = new BitmapFont();
         font.getData().setScale(1.4f);
         font.setColor(1f, 1f, 1f, 1f);
 
         // ---- INPUT ----
         Gdx.input.setInputProcessor(new InputAdapter() {
+
 
             @Override
             public boolean touchDown(int screenX, int screenY, int pointer, int button) {
@@ -183,9 +244,92 @@ public class SmartCityTransit extends ApplicationAdapter {
                     //HUD clicK
                     HudPanel.ClickResult cr = hudPanel.handleClick(screenX, screenY, uiViewport, routes);
 
-                    if (cr.type == HudPanel.ClickType.PREV_PAGE || cr.type == HudPanel.ClickType.NEXT_PAGE) {
+                    if (cr.type == HudPanel.ClickType.EDIT_CREATE_BUS) {
+                        addingBus = true;
+                        busStartStop = null;
+                        busEndStop = null;
+
+                        // prekini druge “mode”
+                        choosingTravelDestination = false;
+                        travelFromStop = null;
+                        travelToStop = null;
+
+                        selectedBus = null;
+                        selectedRoute = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+                        followSelectedBus = false;
+
+                        Gdx.app.log("BUS", "Add bus mode ON: pick START stop then END stop");
                         return true;
                     }
+
+                    if (cr.type == HudPanel.ClickType.TRAVEL_TO) {
+                        if (selectedStop != null) {
+                            choosingTravelDestination = true;
+                            travelFromStop = selectedStop;
+                            travelToStop = null;
+
+                            selectedBus = null;
+                            selectedRoute = null;
+                            stopRoutes = null;
+                            cameraTarget = null;
+                            followSelectedBus = false;
+                        }
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.EDIT_HIDE_SELECTED_STOP) {
+                        if (selectedStop != null) {
+                            hideStop(selectedStop);
+                        }
+                        selectedStop = null;
+                        stopRoutes = null;
+                        selectedBus = null;
+                        selectedRoute = null;
+                        cameraTarget = null;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.ADD_STOP) {
+                        pendingAddStop = true;
+                        selectedRoute = null;
+                        selectedBus = null;
+                        selectedStop = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.EDIT_NAME_FIELD) {
+                        typingStopName = true;
+                        if (editStopName.isEmpty()) {
+                            editStopName = "";
+                        }
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.EDIT_PICK_LOCATION) {
+                        pendingStopWorld = new Vector2(-1, -1); // marker "await"
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.EDIT_ADD_STOP) {
+
+                        if (pendingStopWorld != null && pendingStopWorld.x >= 0) {
+                            double lat = GeoUtils.worldYToLat(pendingStopWorld.y, MAP_ZOOM);
+                            double lon = GeoUtils.worldXToLon(pendingStopWorld.x, MAP_ZOOM);
+
+                            Stop ns = new Stop(editStopName, lat, lon);
+                            stops.add(ns);
+
+                            selectedStop = ns;
+
+                            pendingStopWorld = null;
+                        }
+                        return true;
+                    }
+
 
                     if (cr.type == HudPanel.ClickType.SWITCH_SOURCE) {
                         useGtfs = !useGtfs;
@@ -203,6 +347,10 @@ public class SmartCityTransit extends ApplicationAdapter {
 
                     if (cr.type == HudPanel.ClickType.TOGGLE_SHOW_ONLY_SELECTED) {
                         showOnlySelected = !showOnlySelected;
+                        return true;
+                    }
+
+                    if (cr.type == HudPanel.ClickType.TOGGLE_EDIT_MODE) {
                         return true;
                     }
 
@@ -242,6 +390,155 @@ public class SmartCityTransit extends ApplicationAdapter {
                     // Map click
                     Vector3 v = new Vector3(screenX, screenY, 0);
                     viewport.unproject(v);
+
+                    // --- ADD BUS MODE: pick START stop then END stop (and create route if missing) ---
+                    if (addingBus) {
+                        Stop clicked = pickStop(v.x, v.y);
+                        if (clicked == null) return true;
+                        if (isHidden(clicked)) return true;
+
+                        // 1) pick START
+                        if (busStartStop == null) {
+                            busStartStop = clicked;
+                            busEndStop = null;
+
+                            Gdx.app.log("BUS", "Add bus mode ON: pick START stop then END stop");
+                            Gdx.app.log("BUS", "Start stop = " + busStartStop.name + " (now pick END)");
+                            return true;
+                        }
+
+                        // 2) pick END
+                        if (busEndStop == null) {
+                            // ne dovoli isti stop
+                            if (clicked == busStartStop) return true;
+
+                            busEndStop = clicked;
+                            Gdx.app.log("BUS", "End stop = " + busEndStop.name);
+
+                            //poišči obstoječo linijo
+                            BusRoute rr = findRouteContainingBoth(busStartStop, busEndStop);
+
+                            //če ne obstaja -> ustvari novo (direktno linijo med 2 postajama)
+                            if (rr == null) {
+                                rr = createDirectRoute(busStartStop, busEndStop);
+                                routes.add(rr);
+
+                                //rebuild + stop index
+                                rr.rebuildWorld(MAP_ZOOM);
+                                routeStopIndex.put(rr, new RouteStopIndex(rr, rr.stops, MAP_ZOOM));
+
+                                Gdx.app.log("BUS", "Created NEW route: " + rr.id + " - " + rr.name);
+                            }
+
+                            //ustvari bus na rr
+                            RouteStopIndex idx = routeStopIndex.get(rr);
+                            if (idx != null) {
+                                float startDist = idx.getDistanceForStop(busStartStop);
+                                float endDist   = idx.getDistanceForStop(busEndStop);
+
+                                if (startDist >= 0f && endDist >= 0f) {
+                                    float speed = 30f + MathUtils.random(10f);
+
+                                    Bus nb = new Bus(rr, speed, startDist);
+                                    nb.setTargetDistance(endDist);
+                                    buses.add(nb);
+
+                                    travelBus = nb;
+                                    travelFromStop = busStartStop;
+                                    travelToStop = busEndStop;
+
+                                    selectedBus = nb;
+                                    selectedRoute = rr;
+                                    selectedStop = null;
+                                    stopRoutes = null;
+                                    followSelectedBus = true;
+                                    cameraTarget = null;
+
+                                    Gdx.app.log("BUS", "Bus created on route " + rr.id + " from " + busStartStop.name + " -> " + busEndStop.name);
+                                } else {
+                                    Gdx.app.log("BUS", "Cannot create bus: startDist/endDist invalid.");
+                                }
+                            } else {
+                                Gdx.app.log("BUS", "Cannot create bus: RouteStopIndex missing.");
+                            }
+
+                            addingBus = false;
+                            busStartStop = null;
+                            busEndStop = null;
+                            return true;
+                        }
+
+                        return true;
+                    }
+
+
+                    if (choosingTravelDestination) {
+                        Stop dst = pickStop(v.x, v.y);
+                        if (dst != null && dst != travelFromStop) {
+                            travelToStop = dst;
+                            choosingTravelDestination = false;
+
+                            BusRoute rr = findRouteContainingStops(travelFromStop, travelToStop);
+                            if (rr != null) {
+                                RouteStopIndex idx = routeStopIndex.get(rr);
+                                if (idx != null) {
+                                    float startDist = idx.getDistanceForStop(travelFromStop);
+                                    float speed = 30f + MathUtils.random(10f);
+                                    Bus nb = new Bus(rr, speed, startDist);
+
+                                    buses.add(nb);
+                                    selectedBus = nb;
+                                    followSelectedBus = true;
+                                }
+                            }
+
+                            travelFromStop = null;
+                            return true;
+                        }
+
+                        return true;
+                    }
+
+
+                    if (hudPanel.isEditMode() && hudPanel.isAddingStop()) {
+                        String name = hudPanel.getStopNameBuffer();
+                        if (name == null || name.trim().isEmpty()) name = "Nova postaja";
+
+                        double lon = worldXToLon(v.x, MAP_ZOOM);
+                        double lat = worldYToLat(v.y, MAP_ZOOM);
+
+                        stops.add(new Stop(name.trim(), lat, lon));
+
+                        hudPanel.cancelAddStop();
+                        selectedStop = null;
+                        selectedBus = null;
+                        selectedRoute = null;
+                        stopRoutes = null;
+                        cameraTarget = null;
+
+                        return true;
+                    }
+
+
+                    // če čakamo klik za novo postajo
+                    if (pendingAddStop) {
+                        double lat = GeoUtils.worldYToLat(v.y, MAP_ZOOM);
+                        double lon = GeoUtils.worldXToLon(v.x, MAP_ZOOM);
+
+                        Stop ns = new Stop(pendingStopName, lat, lon);
+                        stops.add(ns);
+
+                        pendingAddStop = false;
+
+                        // izberi novo postajo
+                        selectedStop = ns;
+                        return true;
+                    }
+
+                    if (hudPanel.isEditMode() && pendingStopWorld != null && pendingStopWorld.x < 0) {
+                        pendingStopWorld.set(v.x, v.y);
+                        return true;
+                    }
 
                     //pick bus first
                     Bus b = pickBus(v.x, v.y);
@@ -288,6 +585,34 @@ public class SmartCityTransit extends ApplicationAdapter {
             }
 
             @Override
+            public boolean keyTyped(char character) {
+                if (!hudPanel.isEditMode()) return false;
+                if (!hudPanel.isAddingStop()) return false;
+                if (!hudPanel.isNameFieldActive()) return false;
+
+                String s = hudPanel.getStopNameBuffer();
+
+                if (character == 8) { // backspace
+                    if (s.length() > 0) hudPanel.setStopNameBuffer(s.substring(0, s.length() - 1));
+                    return true;
+                }
+
+                if (character == '\r' || character == '\n') { // enter
+                    hudPanel.setNameFieldActive(false);
+                    return true;
+                }
+
+                if (character >= 32 && character <= 126) {
+                    if (s.length() < 32) hudPanel.setStopNameBuffer(s + character);
+                    return true;
+                }
+
+                return false;
+            }
+
+
+
+            @Override
             public boolean touchDragged(int screenX, int screenY, int pointer) {
                 if (!dragging) return false;
 
@@ -310,6 +635,51 @@ public class SmartCityTransit extends ApplicationAdapter {
                 return true;
             }
         });
+    }
+
+    private BusRoute createDirectRoute(Stop a, Stop b) {
+
+        String id = "NEW-" + System.currentTimeMillis();
+        String name = a.name + " -> " + b.name;
+
+        // stops
+        Array<Stop> stops = new Array<>();
+        stops.add(a);
+        stops.add(b);
+
+        // geo route (lat/lon, straight line)
+        Route geoRoute = new Route(id, name)
+            .add(a.point.lat, a.point.lon)
+            .add(b.point.lat, b.point.lon);
+
+        BusRoute r = new BusRoute(id, name, geoRoute, stops);
+        return r;
+    }
+
+
+
+
+    private BusRoute findRouteContainingBoth(Stop a, Stop b) {
+        if (a == null || b == null) return null;
+        for (int i = 0; i < routes.size; i++) {
+            BusRoute r = routes.get(i);
+            if (r == null || r.stops == null) continue;
+
+            boolean hasA = false, hasB = false;
+            for (int j = 0; j < r.stops.size; j++) {
+                Stop s = r.stops.get(j);
+                if (s == null) continue;
+                if (s == a || (a.id != null && a.id.equals(s.id))) hasA = true;
+                if (s == b || (b.id != null && b.id.equals(s.id))) hasB = true;
+            }
+            if (hasA && hasB) return r;
+        }
+        return null;
+    }
+
+
+    private boolean isStopVisible(Stop s) {
+        return s != null && s.id != null && !hiddenStopIds.contains(s.id);
     }
 
     private void reloadData() {
@@ -351,8 +721,13 @@ public class SmartCityTransit extends ApplicationAdapter {
     }
 
 
+
     @Override
     public void render() {
+        if (selectedStop != null && isHidden(selectedStop)) {
+            selectedStop = null;
+            stopRoutes = null;
+        }
         float dt = Gdx.graphics.getDeltaTime();
         uiTime += dt;
 
@@ -445,6 +820,26 @@ public class SmartCityTransit extends ApplicationAdapter {
             routeStopIndex,
             this::setRouteColor
         );
+        // --- UI overlay instructions ---
+        uiViewport.apply();
+        uiCamera.update();
+
+        batch.setProjectionMatrix(uiCamera.combined);
+        batch.begin();
+
+        if (addingBus) {
+            if (busStartStop == null) {
+                font.draw(batch, "ADD BUS: Click START stop", 420f, uiViewport.getWorldHeight() - 20f);
+            } else {
+                font.draw(batch, "ADD BUS: Click END stop (start = " + busStartStop.name + ")", 420f, uiViewport.getWorldHeight() - 20f);
+            }
+        }
+
+        if (choosingTravelDestination && travelFromStop != null) {
+            font.draw(batch, "TRAVEL: Click destination stop (from = " + travelFromStop.name + ")", 420f, uiViewport.getWorldHeight() - 44f);
+        }
+
+        batch.end();
     }
 
     private Vector2 computeRouteCenter(BusRoute route) {
@@ -460,7 +855,7 @@ public class SmartCityTransit extends ApplicationAdapter {
     }
 
     private Array<BusRoute> computeRoutesForStop(Stop stop) {
-        if (stop == null) return null;
+        if (stop == null || !isStopVisible(stop)) return null;
 
         Array<BusRoute> res = new Array<>();
         for (int i = 0; i < routes.size; i++) {
@@ -571,6 +966,7 @@ public class SmartCityTransit extends ApplicationAdapter {
         // stops
         for (int i = 0; i < stops.size; i++) {
             Stop s = stops.get(i);
+            if (isHidden(s)) continue;
             float x = (float) GeoUtils.lonToWorldX(s.point.lon, MAP_ZOOM);
             float y = (float) GeoUtils.latToWorldY(s.point.lat, MAP_ZOOM);
 
@@ -676,6 +1072,20 @@ public class SmartCityTransit extends ApplicationAdapter {
 
             batch.end();
         }
+        if (addingBus && busStartStop != null) {
+            float sx = (float) GeoUtils.lonToWorldX(busStartStop.point.lon, MAP_ZOOM);
+            float sy = (float) GeoUtils.latToWorldY(busStartStop.point.lat, MAP_ZOOM);
+
+            float pulse = 0.5f + 0.5f * (float)Math.sin(uiTime * 5f);
+            float radius = (STOP_RADIUS + 14f + pulse * 6f) * camera.zoom;
+
+            shapeRenderer.setProjectionMatrix(camera.combined);
+            shapeRenderer.begin(ShapeRenderer.ShapeType.Line);
+            shapeRenderer.setColor(0.2f, 1f, 1f, 0.9f);
+            shapeRenderer.circle(sx, sy, radius, 30);
+            shapeRenderer.end();
+        }
+
     }
 
     // ---------- HUD CLICK HELPERS ----------
@@ -687,6 +1097,7 @@ public class SmartCityTransit extends ApplicationAdapter {
     private int pickHudAction(int screenX, int screenY) {
         Vector3 v = new Vector3(screenX, screenY, 0);
         uiViewport.unproject(v);
+
 
         float worldH = uiViewport.getWorldHeight();
 
@@ -724,6 +1135,19 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         return Integer.MIN_VALUE;
     }
+
+    private double worldXToLon(float worldX, int zoom) {
+        double mapSize = 256.0 * (1 << zoom);
+        return (worldX / mapSize) * 360.0 - 180.0;
+    }
+
+    private double worldYToLat(float worldY, int zoom) {
+        double mapSize = 256.0 * (1 << zoom);
+        double osmY = mapSize - worldY;
+        double n = Math.PI - (2.0 * Math.PI * osmY) / mapSize;
+        return Math.toDegrees(Math.atan(Math.sinh(n)));
+    }
+
 
     private boolean isPointInsideHud(int screenX, int screenY) {
         Vector3 v = new Vector3(screenX, screenY, 0);
@@ -770,7 +1194,7 @@ public class SmartCityTransit extends ApplicationAdapter {
 
         for (int i = 0; i < stops.size; i++) {
             Stop s = stops.get(i);
-
+            if (isHidden(s)) continue;
             float sx = (float) GeoUtils.lonToWorldX(s.point.lon, MAP_ZOOM);
             float sy = (float) GeoUtils.latToWorldY(s.point.lat, MAP_ZOOM);
 

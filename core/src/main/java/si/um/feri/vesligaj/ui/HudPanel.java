@@ -6,6 +6,7 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.ObjectMap;
 import com.badlogic.gdx.utils.viewport.Viewport;
 import si.um.feri.vesligaj.transit.Bus;
 import si.um.feri.vesligaj.transit.BusRoute;
@@ -14,15 +15,22 @@ import si.um.feri.vesligaj.transit.Stop;
 
 public class HudPanel {
 
-    // ---------------- Pagination ----------------
     private int routePage = 0;
     private static final int ROUTES_PER_PAGE = 10;
+
+    private float lastHudX, lastHudY, lastHudW, lastHudH;
+
+    private boolean editMode = false;
+
+    // add-stop flow state
+    private boolean addingStop = false;
+    private boolean nameFieldActive = false;
+    private String stopNameBuffer = "";
 
     private int maxRoutePages(int totalRoutes) {
         return Math.max(1, (int) Math.ceil(totalRoutes / (float) ROUTES_PER_PAGE));
     }
 
-    // ---------------- Click result ----------------
     public enum ClickType {
         NONE,
         TOGGLE_SHOW_ONLY_SELECTED,
@@ -30,7 +38,17 @@ public class HudPanel {
         SELECT_ROUTE,
         SWITCH_SOURCE,
         PREV_PAGE,
-        NEXT_PAGE
+        NEXT_PAGE,
+        TOGGLE_EDIT_MODE,
+        EDIT_PICK_LOCATION,
+        EDIT_ADD_STOP,
+        EDIT_HIDE_SELECTED_STOP,
+        EDIT_ADD_BUS_START,
+        EDIT_ADD_BUS_END,
+        EDIT_CREATE_BUS,
+        EDIT_NAME_FIELD,
+        ADD_STOP,
+        TRAVEL_TO
     }
 
     public static class ClickResult {
@@ -42,6 +60,30 @@ public class HudPanel {
         public static ClickResult toggle() {
             ClickResult r = new ClickResult();
             r.type = ClickType.TOGGLE_SHOW_ONLY_SELECTED;
+            return r;
+        }
+
+        public static ClickResult travelTo() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.TRAVEL_TO;
+            return r;
+        }
+
+        public static ClickResult hideSelectedStop() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.EDIT_HIDE_SELECTED_STOP;
+            return r;
+        }
+
+        public static ClickResult addStop() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.ADD_STOP;
+            return r;
+        }
+
+        public static ClickResult editName() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.EDIT_NAME_FIELD;
             return r;
         }
 
@@ -58,6 +100,18 @@ public class HudPanel {
             return r;
         }
 
+        public static ClickResult toggleEdit() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.TOGGLE_EDIT_MODE;
+            return r;
+        }
+
+        public static ClickResult switchSource() {
+            ClickResult r = new ClickResult();
+            r.type = ClickType.SWITCH_SOURCE;
+            return r;
+        }
+
         public static ClickResult prevPage() {
             ClickResult r = new ClickResult();
             r.type = ClickType.PREV_PAGE;
@@ -70,14 +124,13 @@ public class HudPanel {
             return r;
         }
 
-        public static ClickResult switchSource() {
+        public static ClickResult createBus() {
             ClickResult r = new ClickResult();
-            r.type = ClickType.SWITCH_SOURCE;
+            r.type = ClickType.EDIT_CREATE_BUS;
             return r;
         }
     }
 
-    // ---------------- Layout ----------------
     private float HUD_PAD = 10f;
     private float HUD_BOX_W = 380f;
     private float HUD_TEXT_X_INNER = 12f;
@@ -85,30 +138,49 @@ public class HudPanel {
     private float HUD_SECTION_GAP = 12f;
     private float HUD_ITEM_GAP = 6f;
 
-    // ---------------- State ----------------
     private boolean showOnlySelected = false;
+
+    private float travelBtnX, travelBtnY, travelBtnW, travelBtnH;
+    private boolean travelBtnVisible = false;
+
+    public boolean isTravelBtnVisible() { return travelBtnVisible; }
 
     public boolean isShowOnlySelected() { return showOnlySelected; }
     public void setShowOnlySelected(boolean v) { showOnlySelected = v; }
 
-    // ---------------- Internal cached layout (for correct click hitboxes) ----------------
-    private float lastHudX = 0f, lastHudY = 0f, lastHudW = 0f, lastHudH = 0f;
+    public boolean isEditMode() { return editMode; }
+    public void setEditMode(boolean v) {
+        editMode = v;
+        if (!editMode) {
+            addingStop = false;
+            nameFieldActive = false;
+            stopNameBuffer = "";
+        }
+    }
 
-    private float lastToggleY = Float.NaN;
-    private float lastResetY  = Float.NaN;
-    private float lastDataY   = Float.NaN;
-    private float lastNavY    = Float.NaN;
-    private float lastRoutesStartY = Float.NaN;
-    private int lastRoutesStartIdx = 0;
-    private int lastRoutesEndIdx = 0;
+    public boolean isAddingStop() { return addingStop; }
+    public boolean isNameFieldActive() { return nameFieldActive; }
+    public void setNameFieldActive(boolean v) { nameFieldActive = v; }
 
-    private float lastLineH = 22f;
-    private float lastRowExtra = 6f; // click padding
+    public String getStopNameBuffer() { return stopNameBuffer; }
+    public void setStopNameBuffer(String s) { stopNameBuffer = (s == null) ? "" : s; }
 
-    // ---------------- Formatting ----------------
+    public void beginAddStop() {
+        addingStop = true;
+        nameFieldActive = true;
+        stopNameBuffer = "";
+    }
+
+    public void cancelAddStop() {
+        addingStop = false;
+        nameFieldActive = false;
+        stopNameBuffer = "";
+    }
+
     private String format1(float v) {
         return String.format(java.util.Locale.US, "%.1f", v);
     }
+
     private String format5(double v) {
         return String.format(java.util.Locale.US, "%.5f", v);
     }
@@ -127,11 +199,12 @@ public class HudPanel {
         BusRoute selectedRoute,
         Bus selectedBus,
         Stop selectedStop,
-        com.badlogic.gdx.utils.ObjectMap<BusRoute, RouteStopIndex> routeStopIndex,
+        ObjectMap<BusRoute, RouteStopIndex> routeStopIndex,
         RouteColorSetter routeColorSetter
     ) {
         uiViewport.apply();
         uiCamera.update();
+        travelBtnVisible = false;
 
         final float pad = HUD_PAD;
         final float hudX = pad;
@@ -149,20 +222,25 @@ public class HudPanel {
 
         boolean hasInfo = (selectedBus != null) || (selectedStop != null);
 
-        // NOTE: height calc is "ok enough"; click will use cached positions from actual draw below
-        int linesControls = 3; // toggle + reset + data switch
-        int linesHeader = 1;   // "LINES"
-        int linesNav = 1;      // "< Prev ... Next >"
+        int linesControls = 3;
+        int linesHeader = 1;
+        int linesNav = 1;
         int linesRoutes = Math.min(ROUTES_PER_PAGE, routes.size);
+
+        int linesEdit = 0;
+        if (editMode) {
+            linesEdit = addingStop ? 5 : 4;
+        }
+
         int linesInfoHeader = hasInfo ? 1 : 0;
 
         int linesBus = 0;
         if (selectedBus != null) {
-            linesBus += 1; // title
-            linesBus += 1; // line
-            linesBus += 1; // speed
-            linesBus += 1; // next stop
-            // eta (optional)
+            linesBus += 1;
+            linesBus += 1;
+            linesBus += 1;
+            linesBus += 1;
+
             RouteStopIndex idxTmp = routeStopIndex.get(selectedBus.getRoute());
             float etaSecTmp = -1f;
             if (idxTmp != null) {
@@ -176,34 +254,38 @@ public class HudPanel {
             }
             if (etaSecTmp >= 0f) linesBus += 1;
             if (selectedBus.isWaiting()) linesBus += 1;
-            linesBus += 1; // gap
+            linesBus += 1;
         }
 
         int linesStop = 0;
         if (selectedStop != null) {
-            linesStop += 1; // title
-            linesStop += 1; // name
-            linesStop += 1; // lat
-            linesStop += 1; // lon
+            linesStop += 1;
+            linesStop += 1;
+            linesStop += 3;
         }
 
         float h = 0f;
         h += topMargin;
         h += innerPadY;
-
         h += linesControls * lineH;
 
-        h += (sectionGap * 0.5f);
-        h += 1.5f;
         h += dividerGap;
+        h += 1.5f;
+        h += sectionGap;
 
         h += linesHeader * (lineH + 2f);
-        h += linesNav * (lineH + 6f);
+        h += linesNav * lineH;
+        h += 6f;
         h += linesRoutes * lineH;
 
-        h += (sectionGap * 0.5f);
-        h += 1.5f;
+        if (editMode) {
+            h += sectionGap;
+            h += linesEdit * lineH;
+        }
+
         h += dividerGap;
+        h += 1.5f;
+        h += sectionGap;
 
         if (hasInfo) {
             h += linesInfoHeader * (lineH + 2f);
@@ -218,29 +300,23 @@ public class HudPanel {
         float hudH = Math.max(160f, Math.min(h, uiViewport.getWorldHeight() - 2f * pad));
         float hudY = uiViewport.getWorldHeight() - hudH - pad;
 
-        // cache HUD rect for click handling
         lastHudX = hudX;
         lastHudY = hudY;
         lastHudW = hudW;
         lastHudH = hudH;
-        lastLineH = lineH;
 
-        // ---------- PANEL ----------
         shapeRenderer.setProjectionMatrix(uiCamera.combined);
 
-        // shadow
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(0f, 0f, 0f, 0.25f);
         shapeRenderer.rect(hudX + 4f, hudY - 4f, hudW, hudH);
         shapeRenderer.end();
 
-        // body
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(0.07f, 0.07f, 0.08f, 0.78f);
         shapeRenderer.rect(hudX, hudY, hudW, hudH);
         shapeRenderer.end();
 
-        // top band
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(1f, 1f, 1f, 0.05f);
         shapeRenderer.rect(hudX, hudY + hudH - 30f, hudW, 30f);
@@ -249,26 +325,22 @@ public class HudPanel {
         float dividerX1 = hudX + 10f;
         float dividerX2 = hudX + hudW - 10f;
 
-        // ---------- TEXT ----------
         batch.setProjectionMatrix(uiCamera.combined);
         batch.begin();
 
         float y = hudY + hudH - topMargin;
+        y -= innerPadY;
 
-        // Controls
         String chk = showOnlySelected ? "[x] " : "[ ] ";
         font.setColor(0.92f, 0.92f, 0.92f, 0.95f);
-        lastToggleY = y;
         font.draw(batch, chk + "Show only selected line", x, y);
         y -= lineH;
 
         font.setColor(0.98f, 0.75f, 0.75f, 0.95f);
-        lastResetY = y;
         font.draw(batch, "Reset selection", x, y);
         y -= lineH;
 
         font.setColor(0.85f, 0.85f, 1f, 0.95f);
-        lastDataY = y;
         font.draw(batch, "Data: DEMO / GTFS (click)", x, y);
         y -= lineH;
 
@@ -276,26 +348,19 @@ public class HudPanel {
         float divider1Y = y;
         y -= dividerGap;
 
-        // Lines
         font.setColor(1f, 1f, 1f, 0.95f);
         font.draw(batch, "LINES", x, y);
         y -= (lineH + 2f);
 
-        // Navigation row
         font.setColor(0.85f, 0.85f, 0.85f, 0.9f);
-        lastNavY = y;
         font.draw(batch,
-            "< Prev    Page " + (routePage + 1) + "/" + maxRoutePages(routes.size) + "            Next >",
+            "< Prev    Page " + (routePage + 1) + "/" + maxRoutePages(routes.size) + "    Next >",
             x, y
         );
         y -= (lineH + 6f);
 
         int start = routePage * ROUTES_PER_PAGE;
         int end = Math.min(start + ROUTES_PER_PAGE, routes.size);
-
-        lastRoutesStartIdx = start;
-        lastRoutesEndIdx = end;
-        lastRoutesStartY = y;
 
         for (int i = start; i < end; i++) {
             BusRoute r = routes.get(i);
@@ -311,7 +376,6 @@ public class HudPanel {
                 batch.begin();
             }
 
-            // color bullet
             batch.end();
             shapeRenderer.setProjectionMatrix(uiCamera.combined);
             shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
@@ -323,15 +387,53 @@ public class HudPanel {
             font.setColor(sel ? 1f : 0.88f, sel ? 1f : 0.88f, sel ? 1f : 0.88f, sel ? 0.98f : 0.88f);
             String marker = sel ? "> " : "  ";
             font.draw(batch, marker + r.id + " - " + r.name, x + 8f, y);
-
             y -= lineH;
+        }
+
+        if (editMode) {
+            y -= sectionGap;
+
+            font.setColor(1f, 1f, 1f, 0.95f);
+            font.draw(batch, "EDIT", x, y);
+            y -= (lineH + 2f);
+
+            if (!addingStop) {
+                font.setColor(0.80f, 1f, 0.80f, 0.95f);
+                font.draw(batch, "+ Add stop", x, y);
+                y -= lineH;
+
+                font.setColor(1f, 0.65f, 0.65f, 0.95f);
+                font.draw(batch, "-- Hide selected stop", x, y);
+                y -= lineH;
+
+                font.setColor(0.80f, 0.90f, 1f, 0.95f);
+                font.draw(batch, "+ Add bus (click)", x, y);
+                y -= lineH;
+
+            } else {
+                font.setColor(1f, 1f, 1f, 0.95f);
+                String name = (stopNameBuffer == null || stopNameBuffer.isEmpty()) ? "_" : stopNameBuffer;
+                font.draw(batch, "Name: " + name, x, y);
+                y -= lineH;
+
+                font.setColor(0.80f, 1f, 0.80f, 0.95f);
+                font.draw(batch, "Click map to place stop", x, y);
+                y -= lineH;
+
+                font.setColor(0.95f, 0.75f, 0.75f, 0.90f);
+                font.draw(batch, "Cancel (click here)", x, y);
+                y -= lineH;
+
+                font.setColor(0.85f, 0.85f, 0.85f, 0.90f);
+                font.draw(batch, "Type name on keyboard", x, y);
+                y -= lineH;
+            }
         }
 
         y -= (sectionGap * 0.5f);
         float divider2Y = y;
         y -= dividerGap;
 
-        // Info
         if (hasInfo) {
             font.setColor(1f, 1f, 1f, 0.95f);
             font.draw(batch, "INFO", x, y);
@@ -358,7 +460,6 @@ public class HudPanel {
 
             int routeIndex = routes.indexOf(r, true);
 
-            // small color chip
             batch.end();
             shapeRenderer.setProjectionMatrix(uiCamera.combined);
             shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
@@ -400,11 +501,38 @@ public class HudPanel {
 
             font.draw(batch, "Lon: " + format5(selectedStop.point.lon), x, y);
             y -= (lineH + itemGap);
+
+            font.setColor(0.80f, 0.90f, 1f, 0.95f);
+            font.draw(batch, "Potuj do... (click)", x, y);
+            travelBtnVisible = true;
+            travelBtnX = x;
+            travelBtnY = y - lineH + 6f;
+            travelBtnW = hudW - (innerPadX * 2f);
+            travelBtnH = lineH + 6f;
+
+            y -= (lineH + itemGap);
         }
 
         batch.end();
 
-        // dividers
+        float btnH = 28f;
+        float btnPad = 10f;
+        float btnW = 170f;
+        float btnX = hudX + btnPad;
+        float btnY = hudY + btnPad;
+
+        shapeRenderer.setProjectionMatrix(uiCamera.combined);
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        shapeRenderer.setColor(1f, 1f, 1f, editMode ? 0.14f : 0.08f);
+        shapeRenderer.rect(btnX, btnY, btnW, btnH);
+        shapeRenderer.end();
+
+        batch.setProjectionMatrix(uiCamera.combined);
+        batch.begin();
+        font.setColor(1f, 1f, 1f, 0.95f);
+        font.draw(batch, "Mode: " + (editMode ? "EDIT" : "VIEW"), btnX + 10f, btnY + 20f);
+        batch.end();
+
         shapeRenderer.setProjectionMatrix(uiCamera.combined);
         shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
         shapeRenderer.setColor(1f, 1f, 1f, 0.06f);
@@ -413,65 +541,89 @@ public class HudPanel {
         shapeRenderer.end();
     }
 
-    // Row hit test: we treat each clickable row as a band of height lineH under its baseline.
-    // This matches how you're decrementing y in draw().
-    private boolean hitRow(float vy, float baselineY, float lineH, float extra) {
-        float top = baselineY + extra;
-        float bottom = baselineY - lineH - extra;
-        return vy <= top && vy >= bottom;
-    }
-
     public ClickResult handleClick(int screenX, int screenY, Viewport uiViewport, Array<BusRoute> routes) {
         Vector3 v = new Vector3(screenX, screenY, 0);
         uiViewport.unproject(v);
 
-        // Use last drawn HUD rect (this fixes your "click is lower than text" problem)
         float hudLeft = lastHudX;
         float hudRight = lastHudX + lastHudW;
         float hudBottom = lastHudY;
         float hudTop = lastHudY + lastHudH;
 
-        // Fallback (if draw() hasn't run yet)
-        if (lastHudW <= 0f || lastHudH <= 0f) {
-            float worldH = uiViewport.getWorldHeight();
-            hudLeft = HUD_PAD;
-            hudRight = HUD_PAD + HUD_BOX_W;
-            hudTop = worldH - HUD_PAD;
-            hudBottom = worldH - 600f;
-        }
-
         if (v.x < hudLeft || v.x > hudRight || v.y < hudBottom || v.y > hudTop) {
             return ClickResult.none();
         }
 
-        float lineH = lastLineH > 0f ? lastLineH : HUD_LINE_H;
-        float extra = lastRowExtra;
+        if (travelBtnVisible) {
+            if (v.x >= travelBtnX && v.x <= travelBtnX + travelBtnW && v.y >= travelBtnY && v.y <= travelBtnY + travelBtnH) {
+                return ClickResult.travelTo();
+            }
+        }
 
-        // 1) Toggle
-        if (!Float.isNaN(lastToggleY) && hitRow(v.y, lastToggleY, lineH, extra)) {
+        float btnH = 28f;
+        float btnPad = 10f;
+        float btnW = 170f;
+        float btnX = lastHudX + btnPad;
+        float btnY = lastHudY + btnPad;
+
+        if (v.x >= btnX && v.x <= btnX + btnW && v.y >= btnY && v.y <= btnY + btnH) {
+            editMode = !editMode;
+            if (!editMode) {
+                addingStop = false;
+                nameFieldActive = false;
+                stopNameBuffer = "";
+            }
+            return ClickResult.toggleEdit();
+        }
+
+        final float topMargin = 14f;
+        final float innerPadY = 12f;
+        final float lineH = HUD_LINE_H;
+        final float sectionGap = HUD_SECTION_GAP;
+        final float dividerGap = HUD_SECTION_GAP;
+
+        float y = hudTop - topMargin;
+        y -= innerPadY;
+
+        float toggleTop = y;
+        float toggleBottom = y - lineH;
+        if (v.y <= toggleTop + 4f && v.y >= toggleBottom - 4f) {
             showOnlySelected = !showOnlySelected;
             return ClickResult.toggle();
         }
+        y -= lineH;
 
-        // 2) Reset
-        if (!Float.isNaN(lastResetY) && hitRow(v.y, lastResetY, lineH, extra)) {
+        float resetTop = y;
+        float resetBottom = y - lineH;
+        if (v.y <= resetTop + 4f && v.y >= resetBottom - 4f) {
             return ClickResult.reset();
         }
+        y -= lineH;
 
-        // 3) Switch source
-        if (!Float.isNaN(lastDataY) && hitRow(v.y, lastDataY, lineH, extra)) {
+        float dataTop = y;
+        float dataBottom = y - lineH;
+        if (v.y <= dataTop + 4f && v.y >= dataBottom - 4f) {
             return ClickResult.switchSource();
         }
+        y -= lineH;
 
-        // 4) Nav row: "< Prev ... Next >"
-        if (!Float.isNaN(lastNavY) && hitRow(v.y, lastNavY, lineH, extra)) {
-            // Make these hit areas bigger than the text; this fixes "NEXT needs clicking more right"
-            float prevLeft = hudLeft + 10f;
-            float prevRight = prevLeft + 110f;
+        y -= (sectionGap * 0.5f);
+        y -= dividerGap;
 
-            float nextRight = hudRight - 10f;
-            float nextLeft = nextRight - 110f;
+        y -= (lineH + 2f);
 
+        float navTop = y;
+        float navBottom = y - lineH;
+
+        float innerPadX = HUD_TEXT_X_INNER;
+
+        float prevLeft = lastHudX + innerPadX;
+        float prevRight = prevLeft + 110f;
+
+        float nextRight = lastHudX + lastHudW - innerPadX;
+        float nextLeft = nextRight - 110f;
+
+        if (v.y <= navTop + 4f && v.y >= navBottom - 4f) {
             if (v.x >= prevLeft && v.x <= prevRight) {
                 routePage = Math.max(0, routePage - 1);
                 return ClickResult.prevPage();
@@ -480,63 +632,86 @@ public class HudPanel {
                 routePage = Math.min(maxRoutePages(routes.size) - 1, routePage + 1);
                 return ClickResult.nextPage();
             }
-            // click on nav row but not on buttons -> eat it
-            return ClickResult.none();
         }
 
-        // 5) Route rows (paged)
-        int start = Math.max(0, Math.min(routePage * ROUTES_PER_PAGE, Math.max(0, routes.size)));
+        y -= (lineH + 6f);
+
+        int start = routePage * ROUTES_PER_PAGE;
         int end = Math.min(start + ROUTES_PER_PAGE, routes.size);
 
-        // Prefer cached values from draw (most accurate)
-        if (!Float.isNaN(lastRoutesStartY)) {
-            start = lastRoutesStartIdx;
-            end = lastRoutesEndIdx;
-
-            // Guard if route count changed after draw
-            start = Math.max(0, Math.min(start, routes.size));
-            end = Math.max(start, Math.min(end, routes.size));
-
-            float y = lastRoutesStartY;
-            for (int i = start; i < end; i++) {
-                if (hitRow(v.y, y, lineH, extra)) {
-                    return ClickResult.select(routes.get(i));
-                }
-                y -= lineH;
-            }
-            return ClickResult.none();
-        }
-
-        // Fallback (should rarely happen)
-        float y = hudTop - 14f - (3f * lineH) - (HUD_SECTION_GAP * 0.5f) - HUD_SECTION_GAP - (lineH + 2f) - (lineH + 6f);
         for (int i = start; i < end; i++) {
-            if (hitRow(v.y, y, lineH, extra)) {
+            float rowTop = y;
+            float rowBottom = y - lineH;
+
+            if (v.y <= rowTop + 4f && v.y >= rowBottom - 4f) {
                 return ClickResult.select(routes.get(i));
             }
             y -= lineH;
         }
 
+        if (editMode) {
+            y -= sectionGap;
+
+            float editHeaderTop = y;
+            float editHeaderBottom = y - lineH;
+            if (v.y <= editHeaderTop + 4f && v.y >= editHeaderBottom - 4f) {
+                return ClickResult.none();
+            }
+            y -= (lineH + 2f);
+
+            if (!addingStop) {
+                float addTop = y;
+                float addBottom = y - lineH;
+                if (v.y <= addTop + 4f && v.y >= addBottom - 4f) {
+                    beginAddStop();
+                    return ClickResult.addStop();
+                }
+                y -= lineH;
+
+                float hideTop = y;
+                float hideBottom = y - lineH;
+                if (v.y <= hideTop + 4f && v.y >= hideBottom - 4f) {
+                    return ClickResult.hideSelectedStop();
+                }
+                y -= lineH;
+
+                float busTop = y;
+                float busBottom = y - lineH;
+                if (v.y <= busTop + 4f && v.y >= busBottom - 4f) {
+                    return ClickResult.createBus();
+                }
+                y -= lineH;
+
+            } else {
+                float nameTop = y;
+                float nameBottom = y - lineH;
+                if (v.y <= nameTop + 4f && v.y >= nameBottom - 4f) {
+                    nameFieldActive = true;
+                    return ClickResult.editName();
+                }
+                y -= lineH;
+
+                y -= lineH;
+
+                float cancelTop = y;
+                float cancelBottom = y - lineH;
+                if (v.y <= cancelTop + 4f && v.y >= cancelBottom - 4f) {
+                    cancelAddStop();
+                    return ClickResult.none();
+                }
+                y -= lineH;
+
+                y -= lineH;
+            }
+        }
+
         return ClickResult.none();
     }
-
     public boolean isInsideHud(int screenX, int screenY, Viewport uiViewport) {
         Vector3 v = new Vector3(screenX, screenY, 0);
         uiViewport.unproject(v);
 
-        float hudLeft = lastHudX;
-        float hudRight = lastHudX + lastHudW;
-        float hudBottom = lastHudY;
-        float hudTop = lastHudY + lastHudH;
-
-        // Fallback
-        if (lastHudW <= 0f || lastHudH <= 0f) {
-            float worldH = uiViewport.getWorldHeight();
-            hudLeft = HUD_PAD;
-            hudRight = HUD_PAD + HUD_BOX_W;
-            hudTop = worldH - HUD_PAD;
-            hudBottom = worldH - 600f;
-        }
-
-        return v.x >= hudLeft && v.x <= hudRight && v.y >= hudBottom && v.y <= hudTop;
+        return v.x >= lastHudX && v.x <= lastHudX + lastHudW
+            && v.y >= lastHudY && v.y <= lastHudY + lastHudH;
     }
 }

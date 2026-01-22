@@ -9,7 +9,6 @@ public class Bus {
     private final BusRoute route;
 
     private float speedPx;
-
     private float distance;
 
     private boolean loop = true;
@@ -27,10 +26,31 @@ public class Bus {
     private float stopTimeMinSec = 1.0f;
     private float stopTimeMaxSec = 2.4f;
 
+    // "travel bus" / targeted trip
+    private boolean hasTarget = false;
+    private float targetDistance = 0f;
+
+    // trip starts
+    private float tripStartDistance = 0f;
+
+    // reach target reset to start
+    private boolean resetToTripStartAfterWait = false;
+
+    public void setTargetDistance(float d) {
+        hasTarget = true;
+        targetDistance = Math.max(0f, d);
+
+        tripStartDistance = distance;
+
+        loop = false;
+    }
+
     public Bus(BusRoute route, float speedPx, float startDistance) {
         this.route = route;
         this.speedPx = Math.max(1f, speedPx);
         this.distance = Math.max(0f, startDistance);
+
+        this.tripStartDistance = this.distance;
     }
 
     public BusRoute getRoute() {
@@ -47,6 +67,10 @@ public class Bus {
 
     public void setLoop(boolean loop) {
         this.loop = loop;
+        if (loop) {
+            hasTarget = false;
+            resetToTripStartAfterWait = false;
+        }
     }
 
     public boolean isLoop() {
@@ -92,10 +116,11 @@ public class Bus {
             if (diff < 0f) diff += total;
         } else {
             if (diff < 0f) return;
+
+            if (hasTarget && nextStopDist > targetDistance + stopRadiusPx) return;
         }
 
         if (diff <= stopRadiusPx) {
-            // prepreči, da bi isti stop sprožil večkrat
             if (Math.abs(nextStopDist - lastStopDistance) > stopRadiusPx * 0.75f) {
                 waiting = true;
                 waitTimer = MathUtils.random(stopTimeMinSec, stopTimeMaxSec);
@@ -108,18 +133,41 @@ public class Bus {
         float total = route.getTotalLength();
         if (total <= 0f) return;
 
-        // ---- WAITING (ADDED) ----
+        // ---- WAITING ----
         if (waiting) {
             waitTimer -= dt;
             if (waitTimer <= 0f) {
                 waiting = false;
                 waitTimer = 0f;
+
+                if (resetToTripStartAfterWait) {
+                    distance = tripStartDistance;
+                    lastStopDistance = -999999f;
+                    resetToTripStartAfterWait = false;
+                }
             }
             return;
         }
 
+        // ---- MOVE ----
         distance += speedPx * dt;
 
+        // ---- TARGET TRIP (start -> target -> start -> ...) ----
+        if (hasTarget) {
+            if (distance >= targetDistance) {
+                distance = targetDistance;
+
+                waiting = true;
+                waitTimer = MathUtils.random(stopTimeMinSec, stopTimeMaxSec);
+
+                // after the wait, go back to trip start and repeat
+                resetToTripStartAfterWait = true;
+
+                return;
+            }
+        }
+
+        // ---- LOOPING ----
         if (loop) {
             distance = distance % total;
             if (distance < 0f) distance += total;
@@ -138,7 +186,6 @@ public class Bus {
         // halo
         sr.circle(p.x, p.y, 8.5f, 20);
 
-        // body (caller naj pred tem nastavi drugo barvo)
         sr.circle(p.x, p.y, 6.0f, 20);
     }
 }

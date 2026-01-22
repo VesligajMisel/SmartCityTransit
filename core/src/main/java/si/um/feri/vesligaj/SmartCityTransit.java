@@ -183,6 +183,10 @@ public class SmartCityTransit extends ApplicationAdapter {
                     //HUD clicK
                     HudPanel.ClickResult cr = hudPanel.handleClick(screenX, screenY, uiViewport, routes);
 
+                    if (cr.type == HudPanel.ClickType.PREV_PAGE || cr.type == HudPanel.ClickType.NEXT_PAGE) {
+                        return true;
+                    }
+
                     if (cr.type == HudPanel.ClickType.SWITCH_SOURCE) {
                         useGtfs = !useGtfs;
                         dataSource = useGtfs ? gtfsSource : demoSource;
